@@ -164,7 +164,7 @@ Linux 下 C++ 轻量级 Web 服务器，在 **线程池 + Epoll (ET) + Reactor/P
 * 启动server
 
     ```C++
-    ./server
+    ./build/server
     ```
 
 * 浏览器端
@@ -177,7 +177,7 @@ Linux 下 C++ 轻量级 Web 服务器，在 **线程池 + Epoll (ET) + Reactor/P
 ------
 
 ```C++
-./server [-p port] [-l LOGWrite] [-m TRIGMode] [-o OPT_LINGER] [-s sql_num] [-t thread_num] [-c close_log] [-a actor_model]
+./build/server [-p port] [-l LOGWrite] [-m TRIGMode] [-o OPT_LINGER] [-s sql_num] [-t thread_num] [-c close_log] [-a actor_model]
 ```
 
 温馨提示:以上参数不是非必须，不用全部使用，根据个人情况搭配选用即可.
@@ -209,7 +209,7 @@ Linux 下 C++ 轻量级 Web 服务器，在 **线程池 + Epoll (ET) + Reactor/P
 测试示例命令与含义
 
 ```C++
-./server -p 9007 -l 1 -m 0 -o 1 -s 10 -t 10 -c 1 -a 1
+./build/server -p 9007 -l 1 -m 0 -o 1 -s 10 -t 10 -c 1 -a 1
 ```
 
 - [x] 端口9007
