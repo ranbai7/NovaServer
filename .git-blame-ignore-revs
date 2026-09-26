@@ -1,0 +1,12 @@
+# git blame 忽略清单
+#
+# 此文件列出仅包含格式化、重命名等无行为变更的提交。执行 blame 时忽略它们，
+# 可以避免真实代码的归属被格式噪声掩盖。
+#
+# 启用方式（本地仓库）：
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# GitHub 网页端的 blame 视图会自动识别本文件，无需额外配置。
+
+# style: 引入 clang-format 并统一全项目格式
+3abdbdd0ec984ecd1fc31ff819470a4847a76405
