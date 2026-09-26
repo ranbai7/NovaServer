@@ -1,13 +1,17 @@
-# ===== 构建产物 =====
+# ===== 构建与工具产物 =====
 server
 webbench
 *.o
 core
 build/
+tags
 
 # ===== 运行时日志 =====
 *_ServerLog
 *.log
+
+# ===== 压测原始输出 =====
+test_pressure/results/
 
 # ===== 上传目录 =====
 # 只保留目录结构与说明文件，忽略用户实际上传的内容
