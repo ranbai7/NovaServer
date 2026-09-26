@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>上传成功</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #f0f2f5 0%, #e6e9f0 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .card {
+            background: #fff;
+            padding: 40px 36px;
+            border-radius: 16px;
+            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
+            width: 420px;
+            max-width: 90vw;
+            text-align: center;
+        }
+        .success-icon {
+            width: 72px;
+            height: 72px;
+            background: #e6f9e6;
+            border-radius: 50%;
+            margin: 0 auto 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 36px;
+        }
+        .card h2 {
+            font-size: 22px;
+            font-weight: 700;
+            color: #1a1a2e;
+            margin-bottom: 12px;
+        }
+        .card p {
+            color: #888;
+            font-size: 14px;
+            margin-bottom: 28px;
+            line-height: 1.6;
+        }
+        .btn-group {
+            display: flex;
+            gap: 12px;
+            margin-top: 24px;
+        }
+        .btn {
+            flex: 1;
+            padding: 13px 0;
+            border: none;
+            border-radius: 10px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.25s ease;
+        }
+        .btn-primary {
+            background: #4f6ef7;
+            color: #fff;
+        }
+        .btn-primary:hover {
+            background: #3b54d4;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(79, 110, 247, 0.4);
+        }
+        .btn-outline {
+            background: #fff;
+            color: #4f6ef7;
+            border: 2px solid #4f6ef7;
+        }
+        .btn-outline:hover {
+            background: #f0f4ff;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="success-icon">✅</div>
+        <h2>上传成功</h2>
+        <p>文件已成功保存至服务器</p>
+        <div class="btn-group">
+            <button class="btn btn-outline" onclick="window.location.href='/'">返回首页</button>
+            <button class="btn btn-primary" onclick="window.location.href='/8'">继续上传</button>
+        </div>
+    </div>
+</body>
+</html>

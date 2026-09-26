@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>图片展示</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+        }
+        .container {
+            max-width: 900px;
+            text-align: center;
+            padding: 20px;
+        }
+        .container h2 {
+            font-size: 22px;
+            margin-bottom: 24px;
+            font-weight: 600;
+            color: #ddd;
+        }
+        .container img {
+            max-width: 100%;
+            max-height: 70vh;
+            border-radius: 12px;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+        }
+        .back-btn {
+            display: inline-block;
+            margin-top: 24px;
+            padding: 10px 28px;
+            background: rgba(255,255,255,0.15);
+            color: #fff;
+            border-radius: 8px;
+            text-decoration: none;
+            font-size: 14px;
+            transition: background 0.3s;
+        }
+        .back-btn:hover { background: rgba(255,255,255,0.25); }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>🖼 图片展示</h2>
+        <img src="./xxx.jpg" alt="示例图片" onerror="this.onerror=null;this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22200%22><rect fill=%22%23333%22 width=%22200%22 height=%22200%22/><text fill=%22%23999%22 x=%2250%22 y=%22110%22 font-size=%2216%22>暂无图片</text></svg>';">
+        <br>
+        <a href="javascript:history.back()" class="back-btn">← 返回</a>
+    </div>
+</body>
+</html>

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>关注作者</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #f0f2f5 0%, #e6e9f0 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .card {
+            background: #fff;
+            padding: 40px;
+            border-radius: 16px;
+            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
+            text-align: center;
+            max-width: 400px;
+        }
+        .card h2 {
+            font-size: 22px;
+            font-weight: 700;
+            color: #1a1a2e;
+            margin-bottom: 20px;
+        }
+        .card img {
+            width: 160px;
+            height: 160px;
+            border-radius: 50%;
+            object-fit: cover;
+            margin-bottom: 16px;
+            border: 3px solid #f0f0f0;
+        }
+        .card p {
+            color: #666;
+            font-size: 14px;
+            line-height: 1.6;
+            margin-bottom: 20px;
+        }
+        .btn-back {
+            display: inline-block;
+            padding: 10px 24px;
+            background: #4f6ef7;
+            color: #fff;
+            border-radius: 8px;
+            text-decoration: none;
+            font-size: 14px;
+            transition: background 0.3s;
+        }
+        .btn-back:hover { background: #3b54d4; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>⭐ 关注「两猿社」</h2>
+        <img src="./test1.jpg" alt="作者头像" onerror="this.style.display='none'">
+        <p>更多技术分享，请关注公众号【两猿社】<br>感谢你的支持！</p>
+        <a href="javascript:history.back()" class="btn-back">← 返回</a>
+    </div>
+</body>
+</html>
