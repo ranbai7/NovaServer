@@ -173,6 +173,22 @@ Linux 下 C++ 轻量级 Web 服务器，在 **线程池 + Epoll (ET) + Reactor/P
     ip:9006
     ```
 
+运行测试
+------
+单元测试依赖 GoogleTest，首次使用需先安装：
+
+```bash
+sudo apt install libgtest-dev
+```
+
+执行全部测试：
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
 个性化运行
 ------
 

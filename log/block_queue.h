@@ -79,7 +79,8 @@ public:
             m_mutex.unlock();
             return false;
         }
-        value = m_array[m_front];
+        // m_front 指向最近一次出队的元素，队首元素位于其后一位
+        value = m_array[(m_front + 1) % m_max_size];
         m_mutex.unlock();
         return true;
     }

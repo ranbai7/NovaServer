@@ -64,3 +64,12 @@ if(ENABLE_TSAN)
     target_compile_options(server PRIVATE -fsanitize=thread)
     target_link_options(server PRIVATE -fsanitize=thread)
 endif()
+
+# ---- 单元测试 ----
+# 通过 -DBUILD_TESTING=OFF 可关闭，依赖 GoogleTest
+include(CTest)
+
+if(BUILD_TESTING)
+    find_package(GTest REQUIRED)
+    add_subdirectory(tests)
+endif()
