@@ -1,7 +1,7 @@
 #include "http_conn.h"
 
-#include <mysql/mysql.h>
 #include <fstream>
+#include <mysql/mysql.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -17,10 +17,11 @@ const char *error_500_title = "Internal Error";
 const char *error_500_form = "There was an unusual problem serving the request file.\n";
 
 // 新增：根据文件扩展名返回 MIME 类型
-static const char* get_mime_type(const char* path)
+static const char *get_mime_type(const char *path)
 {
-    const char* ext = strrchr(path, '.');
-    if (!ext) return "application/octet-stream";
+    const char *ext = strrchr(path, '.');
+    if (!ext)
+        return "application/octet-stream";
 
     if (strcasecmp(ext, ".html") == 0 || strcasecmp(ext, ".htm") == 0)
         return "text/html; charset=utf-8";
@@ -143,8 +144,8 @@ void http_conn::close_conn(bool real_close)
 }
 
 //初始化连接,外部调用初始化套接字地址
-void http_conn::init(int sockfd, const sockaddr_in &addr, char *root, int TRIGMode,
-                     int close_log, string user, string passwd, string sqlname)
+void http_conn::init(int sockfd, const sockaddr_in &addr, char *root, int TRIGMode, int close_log, string user,
+                     string passwd, string sqlname)
 {
     m_sockfd = sockfd;
     m_address = addr;
@@ -197,8 +198,6 @@ void http_conn::init()
     memset(m_read_buf, '\0', READ_BUFFER_SIZE);
     memset(m_write_buf, '\0', WRITE_BUFFER_SIZE);
     memset(m_real_file, '\0', FILENAME_LEN);
-
-  
 }
 
 //从状态机，用于分析出一行内容
@@ -382,7 +381,7 @@ http_conn::HTTP_CODE http_conn::parse_headers(char *text)
                 }
             }
         }
-    }   
+    }
 
     else
     {
@@ -410,7 +409,8 @@ http_conn::HTTP_CODE http_conn::process_read()
     HTTP_CODE ret = NO_REQUEST;
     char *text = 0;
 
-    while ((m_check_state == CHECK_STATE_CONTENT && line_status == LINE_OK) || ((line_status = parse_line()) == LINE_OK))
+    while ((m_check_state == CHECK_STATE_CONTENT && line_status == LINE_OK) ||
+           ((line_status = parse_line()) == LINE_OK))
     {
         text = get_line();
         m_start_line = m_checked_idx;
@@ -460,7 +460,7 @@ http_conn::HTTP_CODE http_conn::do_request()
         {
             if (save_uploaded_file())
             {
-              strcpy(m_url, "/Upload-Success.html");
+                strcpy(m_url, "/Upload-Success.html");
             }
             else
             {
@@ -482,7 +482,6 @@ http_conn::HTTP_CODE http_conn::do_request()
     //处理cgi
     if (cgi == 1 && (*(p + 1) == '2' || *(p + 1) == '3'))
     {
-
         //根据标志判断是登录检测还是注册检测
         char flag = m_url[1];
 
@@ -701,8 +700,7 @@ bool http_conn::add_status_line(int status, const char *title)
 }
 bool http_conn::add_headers(int content_len)
 {
-    return add_content_length(content_len) && add_linger() &&
-           add_blank_line();
+    return add_content_length(content_len) && add_linger() && add_blank_line();
 }
 bool http_conn::add_content_length(int content_len)
 {
@@ -781,44 +779,44 @@ bool http_conn::process_write(HTTP_CODE ret)
         }
     }
 
-    //新增：
-    // case UPLOAD_SUCCESS:
-    // {
-    //     // 构造风格一致的上传成功 HTML 页面
-    //     std::string html_body;
-    //     html_body = "<!DOCTYPE html>\r\n";
-    //     html_body += "<html><head><meta charset=\"UTF-8\">";
-    //     html_body += "<title>Upload Success</title></head>\r\n";
-    //     html_body += "<body>\r\n<br/>\r\n<br/>\r\n";
-    //     html_body += "<div align=\"center\"><font size=\"5\">";
-    //     html_body += "<strong>上传成功</strong></font></div>\r\n<br/>\r\n";
-    //     html_body += "<div align=\"center\"><font size=\"4\">";
-    //     html_body += "文件 <strong>" + m_file_name + "</strong> 已成功上传";
-    //     html_body += "</font></div>\r\n<br/>\r\n<br/>\r\n";
-    //     html_body += "<div align=\"center\">\r\n";
-    //     html_body += "<form action=\"8\" method=\"post\">\r\n";
-    //     html_body += "<button type=\"submit\">继续上传</button>\r\n";
-    //     html_body += "</form>\r\n</div>\r\n<br/>\r\n";
-    //     html_body += "<div align=\"center\">\r\n";
-    //     html_body += "<form action=\"5\" method=\"post\">\r\n";
-    //     html_body += "<button type=\"submit\">返回主页</button>\r\n";
-    //     html_body += "</form>\r\n</div>\r\n";
-    //     html_body += "</body>\r\n</html>\r\n";
+        //新增：
+        // case UPLOAD_SUCCESS:
+        // {
+        //     // 构造风格一致的上传成功 HTML 页面
+        //     std::string html_body;
+        //     html_body = "<!DOCTYPE html>\r\n";
+        //     html_body += "<html><head><meta charset=\"UTF-8\">";
+        //     html_body += "<title>Upload Success</title></head>\r\n";
+        //     html_body += "<body>\r\n<br/>\r\n<br/>\r\n";
+        //     html_body += "<div align=\"center\"><font size=\"5\">";
+        //     html_body += "<strong>上传成功</strong></font></div>\r\n<br/>\r\n";
+        //     html_body += "<div align=\"center\"><font size=\"4\">";
+        //     html_body += "文件 <strong>" + m_file_name + "</strong> 已成功上传";
+        //     html_body += "</font></div>\r\n<br/>\r\n<br/>\r\n";
+        //     html_body += "<div align=\"center\">\r\n";
+        //     html_body += "<form action=\"8\" method=\"post\">\r\n";
+        //     html_body += "<button type=\"submit\">继续上传</button>\r\n";
+        //     html_body += "</form>\r\n</div>\r\n<br/>\r\n";
+        //     html_body += "<div align=\"center\">\r\n";
+        //     html_body += "<form action=\"5\" method=\"post\">\r\n";
+        //     html_body += "<button type=\"submit\">返回主页</button>\r\n";
+        //     html_body += "</form>\r\n</div>\r\n";
+        //     html_body += "</body>\r\n</html>\r\n";
 
-    //     add_status_line(200, ok_200_title);
-    //     add_response("Content-Type: text/html; charset=utf-8\r\n");
-    //     add_content_length(html_body.length());
-    //     add_linger();
-    //     add_blank_line();
-    //     if (!add_content(html_body.c_str()))
-    //         return false;
+        //     add_status_line(200, ok_200_title);
+        //     add_response("Content-Type: text/html; charset=utf-8\r\n");
+        //     add_content_length(html_body.length());
+        //     add_linger();
+        //     add_blank_line();
+        //     if (!add_content(html_body.c_str()))
+        //         return false;
 
-    //     m_iv[0].iov_base = m_write_buf;
-    //     m_iv[0].iov_len = m_write_idx;
-    //     m_iv_count = 1;
-    //     bytes_to_send = m_write_idx;
-    //     return true;
-    // }
+        //     m_iv[0].iov_base = m_write_buf;
+        //     m_iv[0].iov_len = m_write_idx;
+        //     m_iv_count = 1;
+        //     bytes_to_send = m_write_idx;
+        //     return true;
+        // }
 
     default:
         return false;
@@ -898,7 +896,7 @@ http_conn::HTTP_CODE http_conn::parse_multipart_content()
         m_file_name = m_file_name.substr(slash + 1);
 
     // 5. 提取文件内容
-    size_t content_start = header_end + 4;          // 跳过 "\r\n\r\n"
+    size_t content_start = header_end + 4; // 跳过 "\r\n\r\n"
     size_t content_end = body.find(m_boundary, content_start);
     if (content_end == std::string::npos)
         return BAD_REQUEST;
@@ -920,7 +918,7 @@ bool http_conn::save_uploaded_file()
     if (m_file_name.empty() || m_file_content.empty())
         return false;
 
-    const char* upload_dir = "./upload/";
+    const char *upload_dir = "./upload/";
     // 确保目录存在
     if (access(upload_dir, F_OK) == -1)
     {

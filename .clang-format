@@ -1,0 +1,55 @@
+# NovaServer 代码格式约定
+#
+# 用法:
+#   clang-format -i <files>          就地格式化
+#   clang-format --dry-run <files>   仅检查不修改
+#
+# 格式化范围仅限项目自身源码，test_pressure/ 下的第三方代码不在其列。
+#
+---
+Language: Cpp
+BasedOnStyle: LLVM
+
+# ---- 缩进 ----
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ContinuationIndentWidth: 4
+AccessModifierOffset: -4
+
+# ---- 大括号 ----
+# 函数、类与控制语句的左大括号均独占一行
+BreakBeforeBraces: Allman
+AllowShortBlocksOnASingleLine: Never
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+
+# ---- 指针与引用 ----
+# 星号与 & 紧贴变量名，如 char *ptr、const string &name
+PointerAlignment: Right
+ReferenceAlignment: Right
+DerivePointerAlignment: false
+
+# ---- 行宽 ----
+ColumnLimit: 120
+
+# ---- 空行 ----
+MaxEmptyLinesToKeep: 1
+KeepEmptyLinesAtTheStartOfBlocks: false
+
+# ---- 头文件 ----
+SortIncludes: CaseSensitive
+IncludeBlocks: Preserve
+
+# ---- 命名空间 ----
+NamespaceIndentation: None
+FixNamespaceComments: false
+
+# ---- 其他 ----
+SpaceAfterCStyleCast: false
+Cpp11BracedListStyle: true
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+ReflowComments: false

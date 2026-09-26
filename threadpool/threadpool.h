@@ -1,15 +1,14 @@
 #ifndef THREADPOOL_H
 #define THREADPOOL_H
 
-#include <list>
+#include "../CGImysql/sql_connection_pool.h"
+#include "../lock/locker.h"
 #include <cstdio>
 #include <exception>
+#include <list>
 #include <pthread.h>
-#include "../lock/locker.h"
-#include "../CGImysql/sql_connection_pool.h"
 
-template <typename T>
-class threadpool
+template <typename T> class threadpool
 {
 public:
     /*thread_number是线程池中线程的数量，max_requests是请求队列中最多允许的、等待处理的请求的数量*/
@@ -24,17 +23,19 @@ private:
     void run();
 
 private:
-    int m_thread_number;        //线程池中的线程数
-    int m_max_requests;         //请求队列中允许的最大请求数
-    pthread_t *m_threads;       //描述线程池的数组，其大小为m_thread_number
-    std::list<T *> m_workqueue; //请求队列
-    locker m_queuelocker;       //保护请求队列的互斥锁
-    sem m_queuestat;            //是否有任务需要处理
-    connection_pool *m_connPool;  //数据库
-    int m_actor_model;          //模型切换
+    int m_thread_number;         //线程池中的线程数
+    int m_max_requests;          //请求队列中允许的最大请求数
+    pthread_t *m_threads;        //描述线程池的数组，其大小为m_thread_number
+    std::list<T *> m_workqueue;  //请求队列
+    locker m_queuelocker;        //保护请求队列的互斥锁
+    sem m_queuestat;             //是否有任务需要处理
+    connection_pool *m_connPool; //数据库
+    int m_actor_model;           //模型切换
 };
 template <typename T>
-threadpool<T>::threadpool( int actor_model, connection_pool *connPool, int thread_number, int max_requests) : m_actor_model(actor_model),m_thread_number(thread_number), m_max_requests(max_requests), m_threads(NULL),m_connPool(connPool)
+threadpool<T>::threadpool(int actor_model, connection_pool *connPool, int thread_number, int max_requests)
+    : m_actor_model(actor_model), m_thread_number(thread_number), m_max_requests(max_requests), m_threads(NULL),
+      m_connPool(connPool)
 {
     if (thread_number <= 0 || max_requests <= 0)
         throw std::exception();
@@ -55,13 +56,11 @@ threadpool<T>::threadpool( int actor_model, connection_pool *connPool, int threa
         }
     }
 }
-template <typename T>
-threadpool<T>::~threadpool()
+template <typename T> threadpool<T>::~threadpool()
 {
     delete[] m_threads;
 }
-template <typename T>
-bool threadpool<T>::append(T *request, int state)
+template <typename T> bool threadpool<T>::append(T *request, int state)
 {
     m_queuelocker.lock();
     if (m_workqueue.size() >= m_max_requests)
@@ -75,8 +74,7 @@ bool threadpool<T>::append(T *request, int state)
     m_queuestat.post();
     return true;
 }
-template <typename T>
-bool threadpool<T>::append_p(T *request)
+template <typename T> bool threadpool<T>::append_p(T *request)
 {
     m_queuelocker.lock();
     if (m_workqueue.size() >= m_max_requests)
@@ -89,15 +87,13 @@ bool threadpool<T>::append_p(T *request)
     m_queuestat.post();
     return true;
 }
-template <typename T>
-void *threadpool<T>::worker(void *arg)
+template <typename T> void *threadpool<T>::worker(void *arg)
 {
     threadpool *pool = (threadpool *)arg;
     pool->run();
     return pool;
 }
-template <typename T>
-void threadpool<T>::run()
+template <typename T> void threadpool<T>::run()
 {
     while (true)
     {

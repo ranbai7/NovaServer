@@ -1,30 +1,30 @@
 #ifndef HTTPCONNECTION_H
 #define HTTPCONNECTION_H
-#include <unistd.h>
-#include <signal.h>
-#include <sys/types.h>
-#include <sys/epoll.h>
-#include <fcntl.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
 #include <arpa/inet.h>
 #include <assert.h>
-#include <sys/stat.h>
-#include <string.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <map>
+#include <netinet/in.h>
 #include <pthread.h>
+#include <signal.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/epoll.h>
 #include <sys/mman.h>
-#include <stdarg.h>
-#include <errno.h>
-#include <sys/wait.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <sys/uio.h>
-#include <map>
+#include <sys/wait.h>
+#include <unistd.h>
 
-#include "../lock/locker.h"
 #include "../CGImysql/sql_connection_pool.h"
-#include "../timer/lst_timer.h"
+#include "../lock/locker.h"
 #include "../log/log.h"
+#include "../timer/lst_timer.h"
 
 class http_conn
 {
@@ -79,14 +79,10 @@ public:
     void process();
     bool read_once();
     bool write();
-    sockaddr_in *get_address()
-    {
-        return &m_address;
-    }
+    sockaddr_in *get_address() { return &m_address; }
     void initmysql_result(connection_pool *connPool);
     int timer_flag;
     int improv;
-
 
 private:
     void init();
@@ -109,15 +105,15 @@ private:
     bool add_blank_line();
 
     // 新增：文件上传相关方法
-    HTTP_CODE parse_multipart_content();   // 解析 multipart 请求体
-    bool save_uploaded_file();             // 保存文件到磁盘
-    void init_file_upload_state();         // 重置上传状态
+    HTTP_CODE parse_multipart_content(); // 解析 multipart 请求体
+    bool save_uploaded_file();           // 保存文件到磁盘
+    void init_file_upload_state();       // 重置上传状态
 
 public:
     static int m_epollfd;
     static int m_user_count;
     MYSQL *mysql;
-    int m_state;  //读为0, 写为1
+    int m_state; //读为0, 写为1
 
 private:
     int m_sockfd;
@@ -155,11 +151,10 @@ private:
     char sql_name[100];
 
     // ========== 文件上传新增成员变量 ==========
-    bool m_is_file_upload;          // 是否为文件上传请求
-    std::string m_boundary;         // multipart boundary（含 "--" 前缀）
-    std::string m_file_name;        // 上传的文件名
-    std::string m_file_content;     // 文件内容（仅小文件）
-
+    bool m_is_file_upload;      // 是否为文件上传请求
+    std::string m_boundary;     // multipart boundary（含 "--" 前缀）
+    std::string m_file_name;    // 上传的文件名
+    std::string m_file_content; // 文件内容（仅小文件）
 };
 
 #endif
