@@ -66,12 +66,6 @@ void http_conn::initmysql_result(connection_pool *connPool)
     //从表中检索完整的结果集
     MYSQL_RES *result = mysql_store_result(mysql);
 
-    //返回结果集中的列数
-    int num_fields = mysql_num_fields(result);
-
-    //返回所有字段结构的数组
-    MYSQL_FIELD *fields = mysql_fetch_fields(result);
-
     //从结果集中获取下一行，将对应的用户名和密码，存入map中
     while (MYSQL_ROW row = mysql_fetch_row(result))
     {
@@ -482,14 +476,8 @@ http_conn::HTTP_CODE http_conn::do_request()
     //处理cgi
     if (cgi == 1 && (*(p + 1) == '2' || *(p + 1) == '3'))
     {
-        //根据标志判断是登录检测还是注册检测
-        char flag = m_url[1];
-
-        char *m_url_real = (char *)malloc(sizeof(char) * 200);
-        strcpy(m_url_real, "/");
-        strcat(m_url_real, m_url + 2);
-        strncpy(m_real_file + len, m_url_real, FILENAME_LEN - len - 1);
-        free(m_url_real);
+        //将请求路径映射为根目录下的实际文件路径
+        snprintf(m_real_file + len, FILENAME_LEN - len, "/%s", m_url + 2);
 
         //将用户名和密码提取出来
         //user=123&passwd=123
@@ -544,57 +532,32 @@ http_conn::HTTP_CODE http_conn::do_request()
 
     if (*(p + 1) == '0')
     {
-        char *m_url_real = (char *)malloc(sizeof(char) * 200);
-        strcpy(m_url_real, "/register.html");
-        strncpy(m_real_file + len, m_url_real, strlen(m_url_real));
-
-        free(m_url_real);
+        snprintf(m_real_file + len, FILENAME_LEN - len, "%s", "/register.html");
     }
     else if (*(p + 1) == '1')
     {
-        char *m_url_real = (char *)malloc(sizeof(char) * 200);
-        strcpy(m_url_real, "/log.html");
-        strncpy(m_real_file + len, m_url_real, strlen(m_url_real));
-
-        free(m_url_real);
+        snprintf(m_real_file + len, FILENAME_LEN - len, "%s", "/log.html");
     }
     else if (*(p + 1) == '5')
     {
-        char *m_url_real = (char *)malloc(sizeof(char) * 200);
-        strcpy(m_url_real, "/picture.html");
-        strncpy(m_real_file + len, m_url_real, strlen(m_url_real));
-
-        free(m_url_real);
+        snprintf(m_real_file + len, FILENAME_LEN - len, "%s", "/picture.html");
     }
     else if (*(p + 1) == '6')
     {
-        char *m_url_real = (char *)malloc(sizeof(char) * 200);
-        strcpy(m_url_real, "/video.html");
-        strncpy(m_real_file + len, m_url_real, strlen(m_url_real));
-
-        free(m_url_real);
+        snprintf(m_real_file + len, FILENAME_LEN - len, "%s", "/video.html");
     }
     else if (*(p + 1) == '7')
     {
-        char *m_url_real = (char *)malloc(sizeof(char) * 200);
-        strcpy(m_url_real, "/fans.html");
-        strncpy(m_real_file + len, m_url_real, strlen(m_url_real));
-
-        free(m_url_real);
+        snprintf(m_real_file + len, FILENAME_LEN - len, "%s", "/fans.html");
     }
-
-    // ========== 新增：上传页面路由 ==========
     else if (*(p + 1) == '8')
     {
-        char *m_url_real = (char *)malloc(sizeof(char) * 200);
-        strcpy(m_url_real, "/upload.html");
-        strncpy(m_real_file + len, m_url_real, strlen(m_url_real));
-        free(m_url_real);
+        snprintf(m_real_file + len, FILENAME_LEN - len, "%s", "/upload.html");
     }
-    // ======================================
-
     else
-        strncpy(m_real_file + len, m_url, FILENAME_LEN - len - 1);
+    {
+        snprintf(m_real_file + len, FILENAME_LEN - len, "%s", m_url);
+    }
 
     if (stat(m_real_file, &m_file_stat) < 0)
         return NO_RESOURCE;
@@ -646,7 +609,7 @@ bool http_conn::write()
 
         bytes_have_send += temp;
         bytes_to_send -= temp;
-        if (bytes_have_send >= m_iv[0].iov_len)
+        if (static_cast<size_t>(bytes_have_send) >= m_iv[0].iov_len)
         {
             m_iv[0].iov_len = 0;
             m_iv[1].iov_base = m_file_address + (bytes_have_send - m_write_idx);
@@ -777,6 +740,7 @@ bool http_conn::process_write(HTTP_CODE ret)
             if (!add_content(ok_string))
                 return false;
         }
+        break;
     }
 
         //新增：

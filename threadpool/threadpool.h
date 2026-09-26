@@ -34,8 +34,8 @@ private:
 };
 template <typename T>
 threadpool<T>::threadpool(int actor_model, connection_pool *connPool, int thread_number, int max_requests)
-    : m_actor_model(actor_model), m_thread_number(thread_number), m_max_requests(max_requests), m_threads(NULL),
-      m_connPool(connPool)
+    : m_thread_number(thread_number), m_max_requests(max_requests), m_threads(NULL), m_connPool(connPool),
+      m_actor_model(actor_model)
 {
     if (thread_number <= 0 || max_requests <= 0)
         throw std::exception();
@@ -63,7 +63,7 @@ template <typename T> threadpool<T>::~threadpool()
 template <typename T> bool threadpool<T>::append(T *request, int state)
 {
     m_queuelocker.lock();
-    if (m_workqueue.size() >= m_max_requests)
+    if (m_workqueue.size() >= static_cast<size_t>(m_max_requests))
     {
         m_queuelocker.unlock();
         return false;
@@ -77,7 +77,7 @@ template <typename T> bool threadpool<T>::append(T *request, int state)
 template <typename T> bool threadpool<T>::append_p(T *request)
 {
     m_queuelocker.lock();
-    if (m_workqueue.size() >= m_max_requests)
+    if (m_workqueue.size() >= static_cast<size_t>(m_max_requests))
     {
         m_queuelocker.unlock();
         return false;

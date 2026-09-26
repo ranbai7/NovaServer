@@ -7,7 +7,11 @@ WebServer::WebServer()
 
     //root文件夹路径
     char server_path[200];
-    getcwd(server_path, 200);
+    if (getcwd(server_path, sizeof(server_path)) == nullptr)
+    {
+        LOG_ERROR("getcwd failed, cannot determine working directory");
+        exit(EXIT_FAILURE);
+    }
     char root[6] = "/root";
     m_root = (char *)malloc(strlen(server_path) + strlen(root) + 1);
     strcpy(m_root, server_path);
@@ -104,7 +108,11 @@ void WebServer::eventListen()
 {
     //网络编程基础步骤
     m_listenfd = socket(PF_INET, SOCK_STREAM, 0);
-    assert(m_listenfd >= 0);
+    if (m_listenfd < 0)
+    {
+        LOG_ERROR("create socket failed");
+        exit(EXIT_FAILURE);
+    }
 
     //优雅关闭连接
     if (0 == m_OPT_LINGER)
@@ -118,7 +126,6 @@ void WebServer::eventListen()
         setsockopt(m_listenfd, SOL_SOCKET, SO_LINGER, &tmp, sizeof(tmp));
     }
 
-    int ret = 0;
     struct sockaddr_in address;
     bzero(&address, sizeof(address));
     address.sin_family = AF_INET;
@@ -127,23 +134,35 @@ void WebServer::eventListen()
 
     int flag = 1;
     setsockopt(m_listenfd, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag));
-    ret = bind(m_listenfd, (struct sockaddr *)&address, sizeof(address));
-    assert(ret >= 0);
-    ret = listen(m_listenfd, 5);
-    assert(ret >= 0);
+    if (bind(m_listenfd, (struct sockaddr *)&address, sizeof(address)) < 0)
+    {
+        LOG_ERROR("bind to port %d failed", m_port);
+        exit(EXIT_FAILURE);
+    }
+    if (listen(m_listenfd, 5) < 0)
+    {
+        LOG_ERROR("listen failed");
+        exit(EXIT_FAILURE);
+    }
 
     utils.init(TIMESLOT);
 
     //epoll创建内核事件表
-    epoll_event events[MAX_EVENT_NUMBER];
     m_epollfd = epoll_create(5);
-    assert(m_epollfd != -1);
+    if (m_epollfd == -1)
+    {
+        LOG_ERROR("epoll_create failed");
+        exit(EXIT_FAILURE);
+    }
 
     utils.addfd(m_epollfd, m_listenfd, false, m_LISTENTrigmode);
     http_conn::m_epollfd = m_epollfd;
 
-    ret = socketpair(PF_UNIX, SOCK_STREAM, 0, m_pipefd);
-    assert(ret != -1);
+    if (socketpair(PF_UNIX, SOCK_STREAM, 0, m_pipefd) == -1)
+    {
+        LOG_ERROR("socketpair failed");
+        exit(EXIT_FAILURE);
+    }
     utils.setnonblocking(m_pipefd[1]);
     utils.addfd(m_epollfd, m_pipefd[0], false, 0);
 
@@ -244,7 +263,6 @@ bool WebServer::dealclientdata()
 bool WebServer::dealwithsignal(bool &timeout, bool &stop_server)
 {
     int ret = 0;
-    int sig;
     char signals[1024];
     ret = recv(m_pipefd[0], signals, sizeof(signals), 0);
     if (ret == -1)

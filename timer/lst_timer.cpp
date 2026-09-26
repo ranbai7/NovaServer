@@ -195,7 +195,11 @@ void Utils::addsig(int sig, void(handler)(int), bool restart)
     if (restart)
         sa.sa_flags |= SA_RESTART;
     sigfillset(&sa.sa_mask);
-    assert(sigaction(sig, &sa, NULL) != -1);
+    if (sigaction(sig, &sa, NULL) == -1)
+    {
+        //此处不宜使用 LOG_ERROR 宏：该宏依赖调用方的日志开关，且日志未初始化时内部文件指针为空
+        fprintf(stderr, "register signal handler failed for signal %d\n", sig);
+    }
 }
 
 //定时处理任务，重新定时以不断触发SIGALRM信号
@@ -217,8 +221,9 @@ int Utils::u_epollfd = 0;
 class Utils;
 void cb_func(client_data *user_data)
 {
+    if (user_data == nullptr)
+        return;
     epoll_ctl(Utils::u_epollfd, EPOLL_CTL_DEL, user_data->sockfd, 0);
-    assert(user_data);
     close(user_data->sockfd);
     http_conn::m_user_count--;
 }
