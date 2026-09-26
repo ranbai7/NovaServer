@@ -11,7 +11,6 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <sys/time.h>
-using namespace std;
 
 template <class T> class block_queue
 {

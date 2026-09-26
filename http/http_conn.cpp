@@ -49,7 +49,7 @@ static const char *get_mime_type(const char *path)
 }
 
 locker m_lock;
-map<string, string> users;
+std::map<std::string, std::string> users;
 
 void http_conn::initmysql_result(connection_pool *connPool)
 {
@@ -69,8 +69,8 @@ void http_conn::initmysql_result(connection_pool *connPool)
     //从结果集中获取下一行，将对应的用户名和密码，存入map中
     while (MYSQL_ROW row = mysql_fetch_row(result))
     {
-        string temp1(row[0]);
-        string temp2(row[1]);
+        std::string temp1(row[0]);
+        std::string temp2(row[1]);
         users[temp1] = temp2;
     }
 }
@@ -138,8 +138,8 @@ void http_conn::close_conn(bool real_close)
 }
 
 //初始化连接,外部调用初始化套接字地址
-void http_conn::init(int sockfd, const sockaddr_in &addr, char *root, int TRIGMode, int close_log, string user,
-                     string passwd, string sqlname)
+void http_conn::init(int sockfd, const sockaddr_in &addr, char *root, int TRIGMode, int close_log,
+                     const std::string &user, const std::string &passwd, const std::string &sqlname)
 {
     m_sockfd = sockfd;
     m_address = addr;
@@ -508,7 +508,7 @@ http_conn::HTTP_CODE http_conn::do_request()
             {
                 m_lock.lock();
                 int res = mysql_query(mysql, sql_insert);
-                users.insert(pair<string, string>(name, password));
+                users.insert(std::pair<std::string, std::string>(name, password));
                 m_lock.unlock();
 
                 if (!res)

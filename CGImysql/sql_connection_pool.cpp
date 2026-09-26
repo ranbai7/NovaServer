@@ -23,8 +23,8 @@ connection_pool *connection_pool::GetInstance()
 }
 
 //构造初始化
-void connection_pool::init(string url, string User, string PassWord, string DBName, int Port, int MaxConn,
-                           int close_log)
+void connection_pool::init(const string &url, const string &User, const string &PassWord, const string &DBName,
+                           int Port, int MaxConn, int close_log)
 {
     m_url = url;
     m_Port = Port;
@@ -120,7 +120,7 @@ void connection_pool::DestroyPool()
 }
 
 //当前空闲的连接数
-int connection_pool::GetFreeConn()
+int connection_pool::GetFreeConn() const
 {
     return this->m_FreeConn;
 }
