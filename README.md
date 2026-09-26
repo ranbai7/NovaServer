@@ -2,6 +2,8 @@
 
 NovaServer
 ===============
+[![CI](https://github.com/ranbai7/NovaServer/actions/workflows/ci.yml/badge.svg)](https://github.com/ranbai7/NovaServer/actions/workflows/ci.yml)
+
 Linux 下 C++ 轻量级 Web 服务器，在 **线程池 + Epoll (ET) + Reactor/Proactor** 高并发架构的基础上，新增文件上传功能，并修复了静态资源 MIME 类型等实用性细节。
 
 > **项目来源**：本项目的架构设计参考自开源项目 [qinguoyi/TinyWebServer](https://github.com/qinguoyi/TinyWebServer)（MIT 协议），在其基础上进行二次开发与重构。原项目版权归原作者所有，详见 [LICENSE](LICENSE)。

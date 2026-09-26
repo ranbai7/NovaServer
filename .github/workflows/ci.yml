@@ -1,0 +1,47 @@
+# 持续集成：每次推送或提交 PR 时，在全新的机器上从零构建并运行测试
+name: CI
+
+# on 定义触发条件
+on:
+  push:
+    branches: [main] # 推送到 main 分支时触发
+  pull_request:
+    branches: [main] # 向 main 提交 PR 时触发
+
+jobs:
+  # 一个 job 运行在一台独立的虚拟机上，多个 job 之间互不影响
+  build-and-test:
+    name: 构建与单元测试
+    runs-on: ubuntu-latest # 使用 GitHub 提供的 Ubuntu 环境
+
+    # 矩阵：同一套步骤分别以 Release 和 Debug 两种配置各执行一遍
+    strategy:
+      matrix:
+        build_type: [Release, Debug]
+
+    steps:
+      # ---- 第 1 步：把仓库代码检出到这台机器上 ----
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      # ---- 第 2 步：安装构建所需的系统依赖 ----
+      # libmysqlclient-dev 供服务器编译链接，libgtest-dev 供单元测试使用
+      - name: 安装依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmysqlclient-dev libgtest-dev
+
+      # ---- 第 3 步：生成构建系统 ----
+      # ${{ matrix.build_type }} 会被替换为矩阵中的当前取值
+      - name: 配置 CMake
+        run: cmake -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+
+      # ---- 第 4 步：编译 ----
+      # $(nproc) 取当前机器的核心数，用于并行编译
+      - name: 编译
+        run: cmake --build build -j"$(nproc)"
+
+      # ---- 第 5 步：运行单元测试 ----
+      # --output-on-failure 让测试失败时打印详细日志，否则只有一行失败提示
+      - name: 运行单元测试
+        run: ctest --test-dir build --output-on-failure
