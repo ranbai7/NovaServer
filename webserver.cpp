@@ -2,6 +2,7 @@
 
 #include <cerrno>
 #include <climits>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -9,38 +10,39 @@
 
 WebServer::WebServer()
 {
-    //http_conn类对象
-    users = new http_conn[MAX_FD];
-
     //根目录在 init 中依据配置解析，此处先置空，保证析构函数不会释放未分配的指针
     m_root = nullptr;
+    m_connPool = nullptr;
 
-    //定时器
-    users_timer = new client_data[MAX_FD];
+    m_loop.reset(new EventLoop());
+    m_acceptor.reset();
+    m_signals.reset();
+
+    m_conn_count = 0;
+    m_listen_trig_mode = 0;
+    m_conn_trig_mode = 0;
 }
 
 WebServer::~WebServer()
 {
-    close(m_epollfd);
-    close(m_listenfd);
-    close(m_pipefd[1]);
-    close(m_pipefd[0]);
+    //先释放监听与信号，再释放事件循环：后两者的析构都要访问循环
+    m_acceptor.reset();
+    m_signals.reset();
+    m_loop.reset();
+
     free(m_root);
-    delete[] users;
-    delete[] users_timer;
-    delete m_pool;
 }
 
 void WebServer::init(const Config &config)
 {
     m_port = config.PORT;
+    m_close_log = config.close_log;
     m_log_write = config.LOGWrite;
     m_OPT_LINGER = config.OPT_LINGER;
     m_TRIGMode = config.TRIGMode;
-    m_close_log = config.close_log;
-    m_actormodel = config.actor_model;
     m_thread_num = config.thread_num;
     m_sql_num = config.sql_num;
+    m_root_dir = config.root_dir;
 
     m_log_dir = config.log_dir;
     m_log_file = config.log_file;
@@ -54,13 +56,38 @@ void WebServer::init(const Config &config)
     m_db_password = config.db_password;
     m_db_name = config.db_name;
 
+    //触发模式的两侧组合。取值非法时终止启动：此前这里没有 else 分支，
+    //而两个成员又未初始化，写错配置会以不确定的方式注册描述符
+    switch (m_TRIGMode)
+    {
+    case 0: //LT + LT
+        m_listen_trig_mode = 0;
+        m_conn_trig_mode = 0;
+        break;
+    case 1: //LT + ET
+        m_listen_trig_mode = 0;
+        m_conn_trig_mode = 1;
+        break;
+    case 2: //ET + LT
+        m_listen_trig_mode = 1;
+        m_conn_trig_mode = 0;
+        break;
+    case 3: //ET + ET
+        m_listen_trig_mode = 1;
+        m_conn_trig_mode = 1;
+        break;
+    default:
+        std::fprintf(stderr, "触发模式取值非法: %d（有效范围 0..3）\n", m_TRIGMode);
+        exit(EXIT_FAILURE);
+    }
+
     //把站点根目录解析为规范化的绝对路径：既去掉 ./ 与重复的 /，
     //也顺带确认该目录确实存在——否则每个请求都会走到 stat 失败为止，问题暴露得太晚。
     //此处尚未初始化日志（日志初始化需要用到配置），因此只能写标准错误
     char resolved[PATH_MAX];
-    if (realpath(config.root_dir.c_str(), resolved) == nullptr)
+    if (realpath(m_root_dir.c_str(), resolved) == nullptr)
     {
-        std::fprintf(stderr, "站点根目录不可用: %s (%s)\n", config.root_dir.c_str(), strerror(errno));
+        std::fprintf(stderr, "站点根目录不可用: %s (%s)\n", m_root_dir.c_str(), strerror(errno));
         exit(EXIT_FAILURE);
     }
     //根目录要与请求路径拼进 http_conn 的 m_real_file，装不下时每个请求都无法映射。
@@ -74,34 +101,10 @@ void WebServer::init(const Config &config)
     }
     free(m_root);
     m_root = strdup(resolved);
-}
 
-void WebServer::trig_mode()
-{
-    //LT + LT
-    if (0 == m_TRIGMode)
-    {
-        m_LISTENTrigmode = 0;
-        m_CONNTrigmode = 0;
-    }
-    //LT + ET
-    else if (1 == m_TRIGMode)
-    {
-        m_LISTENTrigmode = 0;
-        m_CONNTrigmode = 1;
-    }
-    //ET + LT
-    else if (2 == m_TRIGMode)
-    {
-        m_LISTENTrigmode = 1;
-        m_CONNTrigmode = 0;
-    }
-    //ET + ET
-    else if (3 == m_TRIGMode)
-    {
-        m_LISTENTrigmode = 1;
-        m_CONNTrigmode = 1;
-    }
+    m_acceptor.reset(new Acceptor(m_loop.get(), m_port, m_listen_trig_mode, m_OPT_LINGER, m_close_log));
+    m_acceptor->set_new_connection_callback([this](int connfd, const sockaddr_in &peer)
+                                            { on_new_connection(connfd, peer); });
 }
 
 void WebServer::log_write()
@@ -137,388 +140,67 @@ void WebServer::log_write()
 
 void WebServer::sql_pool()
 {
-    //初始化数据库连接池
     m_connPool = connection_pool::GetInstance();
     m_connPool->init(m_db_host, m_db_user, m_db_password, m_db_name, m_db_port, m_sql_num, m_close_log);
 
-    //初始化数据库读取表
-    users->initmysql_result(m_connPool);
+    //启动期一次性加载用户表
+    http_conn::initmysql_result(m_connPool, m_close_log);
 }
 
-void WebServer::thread_pool()
+void WebServer::run()
 {
-    //线程池
-    m_pool = new threadpool<http_conn>(m_actormodel, m_connPool, m_thread_num);
+    //信号必须在创建任何线程之前屏蔽。当前只有主线程，但这道约束要写在
+    //它将来仍然成立的位置上——线程池一旦建立，晚屏蔽就无效了
+    if (!SignalWatcher::block_signals({SIGTERM, SIGINT}))
+        std::fprintf(stderr, "屏蔽退出信号失败: %s\n", strerror(errno));
+
+    //SIGPIPE 仍按忽略处理：客户端提前断开时写操作会收到它，
+    //而写失败已经在返回值里体现了，不需要让进程收到信号
+    signal(SIGPIPE, SIG_IGN);
+
+    m_signals.reset(new SignalWatcher(m_loop.get(), {SIGTERM, SIGINT}));
+    m_signals->set_callback([this](int) { m_loop->quit(); });
+
+    m_acceptor->start();
+    m_loop->loop();
 }
 
-void WebServer::eventListen()
+void WebServer::on_new_connection(int connfd, const sockaddr_in &peer)
 {
-    //网络编程基础步骤
-    m_listenfd = socket(PF_INET, SOCK_STREAM, 0);
-    if (m_listenfd < 0)
+    if (m_conn_count.fetch_add(1) >= MAX_CONNECTION)
     {
-        LOG_ERROR("create socket failed");
-        exit(EXIT_FAILURE);
+        m_conn_count.fetch_sub(1);
+
+        //超出上限：给出一条提示再关闭。此时该描述符尚未注册进事件循环
+        const char *busy = "Internal server busy";
+        if (send(connfd, busy, strlen(busy), 0) < 0)
+        {
+            //对端可能已经断开，写失败不是这里的问题
+        }
+        close(connfd);
+
+        LOG_ERROR("%s", "Internal server busy");
+        return;
     }
 
-    //优雅关闭连接
-    if (0 == m_OPT_LINGER)
-    {
-        struct linger tmp = {0, 1};
-        setsockopt(m_listenfd, SOL_SOCKET, SO_LINGER, &tmp, sizeof(tmp));
-    }
-    else if (1 == m_OPT_LINGER)
-    {
-        struct linger tmp = {1, 1};
-        setsockopt(m_listenfd, SOL_SOCKET, SO_LINGER, &tmp, sizeof(tmp));
-    }
+    EventLoop *loop = m_loop.get();
+    const std::shared_ptr<TcpConnection> conn =
+        std::make_shared<TcpConnection>(loop, connfd, peer, m_root, m_conn_trig_mode, m_close_log, IDLE_TIMEOUT_MS);
+    conn->set_close_callback([this](const std::shared_ptr<TcpConnection> &closed) { on_connection_closed(closed); });
 
-    struct sockaddr_in address;
-    bzero(&address, sizeof(address));
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_ANY);
-    address.sin_port = htons(m_port);
+    //顺序固定：先登记再启动。start() 里注册的定时器持有连接的弱引用，
+    //要求它此前已经被 shared_ptr 持有
+    loop->add_connection(conn);
+    conn->start();
 
-    int flag = 1;
-    setsockopt(m_listenfd, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag));
-    if (bind(m_listenfd, (struct sockaddr *)&address, sizeof(address)) < 0)
-    {
-        LOG_ERROR("bind to port %d failed", m_port);
-        exit(EXIT_FAILURE);
-    }
-    //backlog 取 512（内核会自行截断到 net.core.somaxconn）。此前的 5 太小：
-    //突发建立连接时 accept 队列溢出，溢出的连接要被客户端重传 SYN 才能建立。
-    //实测 wrk 以 100 并发起压，ET 监听的两个组合出现约 10 个请求超时、
-    //P99 达 340~370ms，而同条件下 LT 监听只有 5~11ms
-    //（LT 下每次可读事件都紧接一次 accept，队列排空虽细碎却持续）
-    if (listen(m_listenfd, 512) < 0)
-    {
-        LOG_ERROR("listen failed");
-        exit(EXIT_FAILURE);
-    }
-
-    utils.init(TIMESLOT);
-
-    //epoll创建内核事件表
-    m_epollfd = epoll_create(5);
-    if (m_epollfd == -1)
-    {
-        LOG_ERROR("epoll_create failed");
-        exit(EXIT_FAILURE);
-    }
-
-    utils.addfd(m_epollfd, m_listenfd, false, m_LISTENTrigmode);
-    http_conn::m_epollfd = m_epollfd;
-
-    if (socketpair(PF_UNIX, SOCK_STREAM, 0, m_pipefd) == -1)
-    {
-        LOG_ERROR("socketpair failed");
-        exit(EXIT_FAILURE);
-    }
-    utils.setnonblocking(m_pipefd[1]);
-    utils.addfd(m_epollfd, m_pipefd[0], false, 0);
-
-    utils.addsig(SIGPIPE, SIG_IGN);
-    utils.addsig(SIGALRM, utils.sig_handler, false);
-    utils.addsig(SIGTERM, utils.sig_handler, false);
-
-    alarm(TIMESLOT);
-
-    //工具类,信号和描述符基础操作
-    Utils::u_pipefd = m_pipefd;
-    Utils::u_epollfd = m_epollfd;
+    LOG_INFO("new connection from %s, active: %ld", inet_ntoa(peer.sin_addr), m_conn_count.load());
 }
 
-void WebServer::timer(int connfd, struct sockaddr_in client_address)
+void WebServer::on_connection_closed(const std::shared_ptr<TcpConnection> &conn)
 {
-    users[connfd].init(connfd, client_address, m_root, m_CONNTrigmode, m_close_log);
+    //延迟擦除：本函数由连接自己的回调触发，立刻从注册表移除会让最后一份
+    //引用在回调栈内析构连接对象
+    conn->loop()->remove_connection(conn);
 
-    //初始化client_data数据
-    //创建定时器，设置回调函数和超时时间，绑定用户数据，将定时器添加到链表中
-    users_timer[connfd].address = client_address;
-    users_timer[connfd].sockfd = connfd;
-    util_timer *timer = new util_timer;
-    timer->user_data = &users_timer[connfd];
-    timer->cb_func = cb_func;
-    time_t cur = time(NULL);
-    timer->expire = cur + 3 * TIMESLOT;
-    users_timer[connfd].timer = timer;
-    utils.m_timer_lst.add_timer(timer);
-}
-
-//若有数据传输，则将定时器往后延迟3个单位
-//并对新的定时器在链表上的位置进行调整
-void WebServer::adjust_timer(util_timer *timer)
-{
-    time_t cur = time(NULL);
-    timer->expire = cur + 3 * TIMESLOT;
-    utils.m_timer_lst.adjust_timer(timer);
-
-    LOG_INFO("%s", "adjust timer once");
-}
-
-void WebServer::deal_timer(util_timer *timer, int sockfd)
-{
-    timer->cb_func(&users_timer[sockfd]);
-    if (timer)
-    {
-        utils.m_timer_lst.del_timer(timer);
-    }
-
-    LOG_INFO("close fd %d", users_timer[sockfd].sockfd);
-}
-
-bool WebServer::dealclientdata()
-{
-    struct sockaddr_in client_address;
-    socklen_t client_addrlength = sizeof(client_address);
-    if (0 == m_LISTENTrigmode)
-    {
-        int connfd = accept(m_listenfd, (struct sockaddr *)&client_address, &client_addrlength);
-        if (connfd < 0)
-        {
-            //EAGAIN 表示此刻没有待处理的连接，不是错误；LT 下下次可读事件会再来
-            if (errno != EAGAIN && errno != EWOULDBLOCK)
-                LOG_ERROR("%s:errno is:%d", "accept error", errno);
-            return false;
-        }
-        if (http_conn::m_user_count >= MAX_FD)
-        {
-            utils.show_error(connfd, "Internal server busy");
-            LOG_ERROR("%s", "Internal server busy");
-            return false;
-        }
-        timer(connfd, client_address);
-    }
-
-    else
-    {
-        while (1)
-        {
-            int connfd = accept(m_listenfd, (struct sockaddr *)&client_address, &client_addrlength);
-            if (connfd < 0)
-            {
-                //待处理的连接已取完，是 ET 循环的正常出口
-                if (errno == EAGAIN || errno == EWOULDBLOCK)
-                    break;
-                //被信号打断（SIGALRM 未设 SA_RESTART）或该连接在 accept 前已被对端中止。
-                //这两种情况下队列里可能还有连接，而 ET 不会再通知，因此必须重试
-                if (errno == EINTR || errno == ECONNABORTED)
-                    continue;
-                LOG_ERROR("%s:errno is:%d", "accept error", errno);
-                break;
-            }
-            if (http_conn::m_user_count >= MAX_FD)
-            {
-                utils.show_error(connfd, "Internal server busy");
-                LOG_ERROR("%s", "Internal server busy");
-                break;
-            }
-            timer(connfd, client_address);
-        }
-        return false;
-    }
-    return true;
-}
-
-bool WebServer::dealwithsignal(bool &timeout, bool &stop_server)
-{
-    int ret = 0;
-    char signals[1024];
-    ret = recv(m_pipefd[0], signals, sizeof(signals), 0);
-    if (ret == -1)
-    {
-        return false;
-    }
-    else if (ret == 0)
-    {
-        return false;
-    }
-    else
-    {
-        for (int i = 0; i < ret; ++i)
-        {
-            switch (signals[i])
-            {
-            case SIGALRM:
-            {
-                timeout = true;
-                break;
-            }
-            case SIGTERM:
-            {
-                stop_server = true;
-                break;
-            }
-            }
-        }
-    }
-    return true;
-}
-
-void WebServer::dealwithread(int sockfd)
-{
-    util_timer *timer = users_timer[sockfd].timer;
-
-    //reactor
-    if (1 == m_actormodel)
-    {
-        if (timer)
-        {
-            adjust_timer(timer);
-        }
-
-        //若监测到读事件，将该事件放入请求队列
-        m_pool->append(users + sockfd, 0);
-
-        while (true)
-        {
-            if (1 == users[sockfd].improv)
-            {
-                if (1 == users[sockfd].timer_flag)
-                {
-                    deal_timer(timer, sockfd);
-                    users[sockfd].timer_flag = 0;
-                }
-                users[sockfd].improv = 0;
-                break;
-            }
-        }
-    }
-    else
-    {
-        //proactor
-        if (users[sockfd].read_once())
-        {
-            LOG_INFO("deal with the client(%s)", inet_ntoa(users[sockfd].get_address()->sin_addr));
-
-            //若监测到读事件，将该事件放入请求队列
-            m_pool->append_p(users + sockfd);
-
-            if (timer)
-            {
-                adjust_timer(timer);
-            }
-        }
-        else
-        {
-            deal_timer(timer, sockfd);
-        }
-    }
-}
-
-void WebServer::dealwithwrite(int sockfd)
-{
-    util_timer *timer = users_timer[sockfd].timer;
-    //reactor
-    if (1 == m_actormodel)
-    {
-        if (timer)
-        {
-            adjust_timer(timer);
-        }
-
-        m_pool->append(users + sockfd, 1);
-
-        while (true)
-        {
-            if (1 == users[sockfd].improv)
-            {
-                if (1 == users[sockfd].timer_flag)
-                {
-                    deal_timer(timer, sockfd);
-                    users[sockfd].timer_flag = 0;
-                }
-                users[sockfd].improv = 0;
-                break;
-            }
-        }
-    }
-    else
-    {
-        //proactor
-        if (users[sockfd].write())
-        {
-            LOG_INFO("send data to the client(%s)", inet_ntoa(users[sockfd].get_address()->sin_addr));
-
-            if (timer)
-            {
-                adjust_timer(timer);
-            }
-        }
-        else
-        {
-            deal_timer(timer, sockfd);
-        }
-    }
-}
-
-void WebServer::eventLoop()
-{
-    bool timeout = false;
-    bool stop_server = false;
-
-    while (!stop_server)
-    {
-        int number = epoll_wait(m_epollfd, events, MAX_EVENT_NUMBER, -1);
-        if (number < 0 && errno != EINTR)
-        {
-            LOG_ERROR("%s", "epoll failure");
-            break;
-        }
-
-        for (int i = 0; i < number; i++)
-        {
-            int sockfd = events[i].data.fd;
-
-            //处理新到的客户连接
-            if (sockfd == m_listenfd)
-            {
-                bool flag = dealclientdata();
-                if (false == flag)
-                    continue;
-            }
-            //处理信号
-            else if ((sockfd == m_pipefd[0]) && (events[i].events & EPOLLIN))
-            {
-                bool flag = dealwithsignal(timeout, stop_server);
-                if (false == flag)
-                    LOG_ERROR("%s", "dealclientdata failure");
-            }
-            //处理客户连接上接收到的数据
-            else if (events[i].events & EPOLLIN)
-            {
-                dealwithread(sockfd);
-            }
-            //继续发送尚未发完的响应
-            else if (events[i].events & EPOLLOUT)
-            {
-                dealwithwrite(sockfd);
-            }
-            //对端已挂断、半关闭或出错。此前这一分支排在读写之前，于是客户端
-            //「发完请求就 shutdown 写端」时连接被直接关闭，请求与响应都丢了
-            //（且因接收缓冲区尚有未读数据，内核发出的是 RST）
-            else if (events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR))
-            {
-                //只有确实无事可做时才关闭：请求可能刚读完、正由工作线程处理，
-                //响应也可能还没发完，两者都还要用这条连接。还有待办时必须重新
-                //激活关注——本次事件已被这一分支消费，ONESHOT 下不重新激活
-                //就没有下一次事件了（发送缓冲满时 EPOLLOUT 不置位，事件里带的
-                //是 EPOLLRDHUP，实测会让大文件下载卡在半途）
-                if (!users[sockfd].rearm_epoll())
-                {
-                    util_timer *timer = users_timer[sockfd].timer;
-                    deal_timer(timer, sockfd);
-                }
-            }
-        }
-        if (timeout)
-        {
-            utils.timer_handler();
-
-            LOG_INFO("%s", "timer tick");
-
-            timeout = false;
-        }
-    }
+    LOG_INFO("connection closed, active: %ld", m_conn_count.fetch_sub(1) - 1);
 }

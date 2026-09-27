@@ -34,7 +34,7 @@ int main(int argc, char *argv[])
 
     WebServer server;
 
-    //初始化
+    //初始化：解析配置与站点根目录
     server.init(config);
 
     //日志
@@ -43,17 +43,8 @@ int main(int argc, char *argv[])
     //数据库
     server.sql_pool();
 
-    //线程池
-    server.thread_pool();
-
-    //触发模式
-    server.trig_mode();
-
-    //监听
-    server.eventListen();
-
-    //运行
-    server.eventLoop();
+    //建立监听并进入事件循环，直到收到退出信号
+    server.run();
 
     return 0;
 }

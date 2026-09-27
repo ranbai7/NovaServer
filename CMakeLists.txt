@@ -35,8 +35,10 @@ set(NOVASERVER_SOURCES
     net/event_loop.cpp
     net/timer_queue.cpp
     net/signal_watcher.cpp
+    net/socket_utils.cpp
+    net/acceptor.cpp
+    net/tcp_connection.cpp
     auth/password_hash.cpp
-    timer/lst_timer.cpp
     log/log.cpp
     CGImysql/sql_connection_pool.cpp
 )

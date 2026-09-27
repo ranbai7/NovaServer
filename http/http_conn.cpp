@@ -435,8 +435,12 @@ RegisterResult register_user(const std::string &name, const std::string &passwor
 }
 } // namespace
 
-void http_conn::initmysql_result(connection_pool *connPool)
+void http_conn::initmysql_result(connection_pool *connPool, int close_log)
 {
+    //LOG_* 宏读取的是连接的成员 m_close_log，而本函数与实例无关（启动期一次性
+    //调用，没有连接对象），因此在函数内提供一个同名的局部量供宏使用
+    const int m_close_log = close_log;
+
     //先从连接池中取一个连接
     MYSQL *mysql = NULL;
     connectionRAII mysqlcon(&mysql, connPool);
@@ -490,91 +494,35 @@ void http_conn::initmysql_result(connection_pool *connPool)
     mysql_free_result(result);
 }
 
-//对文件描述符设置非阻塞
-int setnonblocking(int fd)
+void http_conn::set_event_notifier(EventCallback want_read, EventCallback want_write)
 {
-    int old_option = fcntl(fd, F_GETFL);
-    int new_option = old_option | O_NONBLOCK;
-    fcntl(fd, F_SETFL, new_option);
-    return old_option;
-}
-
-//将内核事件表注册读事件，ET模式，选择开启EPOLLONESHOT
-void addfd(int epollfd, int fd, bool one_shot, int TRIGMode)
-{
-    epoll_event event;
-    event.data.fd = fd;
-
-    if (1 == TRIGMode)
-        event.events = EPOLLIN | EPOLLET | EPOLLRDHUP;
-    else
-        event.events = EPOLLIN | EPOLLRDHUP;
-
-    if (one_shot)
-        event.events |= EPOLLONESHOT;
-    epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event);
-    setnonblocking(fd);
-}
-
-//从内核时间表删除描述符
-void removefd(int epollfd, int fd)
-{
-    epoll_ctl(epollfd, EPOLL_CTL_DEL, fd, 0);
-    close(fd);
-}
-
-//将事件重置为EPOLLONESHOT
-void modfd(int epollfd, int fd, int ev, int TRIGMode)
-{
-    epoll_event event;
-    event.data.fd = fd;
-
-    if (1 == TRIGMode)
-        event.events = ev | EPOLLET | EPOLLONESHOT | EPOLLRDHUP;
-    else
-        event.events = ev | EPOLLONESHOT | EPOLLRDHUP;
-
-    epoll_ctl(epollfd, EPOLL_CTL_MOD, fd, &event);
-}
-
-int http_conn::m_user_count = 0;
-int http_conn::m_epollfd = -1;
-
-//关闭连接，关闭一个连接，客户总量减一
-void http_conn::close_conn(bool real_close)
-{
-    if (real_close && (m_sockfd != -1))
-    {
-        printf("close %d\n", m_sockfd);
-        removefd(m_epollfd, m_sockfd);
-        m_sockfd = -1;
-        m_user_count--;
-    }
+    m_want_read = std::move(want_read);
+    m_want_write = std::move(want_write);
 }
 
 //初始化连接,外部调用初始化套接字地址
-void http_conn::init(int sockfd, const sockaddr_in &addr, char *root, int TRIGMode, int close_log)
+void http_conn::init(int sockfd, const sockaddr_in &addr, const char *root, int TRIGMode, int close_log)
 {
     m_sockfd = sockfd;
     m_address = addr;
 
     //当浏览器出现连接重置时，可能是网站根目录出错或http响应格式出错或者访问的文件中内容完全为空
     doc_root = root;
-    //成员必须先于 addfd 赋值：addfd 要读取 m_TRIGMode 决定 connfd 的触发模式，
-    //若在赋值前调用，注册时读到的是未初始化的值，-m 参数中的连接侧组合因而从未生效
     m_TRIGMode = TRIGMode;
     m_close_log = close_log;
 
-    addfd(m_epollfd, sockfd, true, m_TRIGMode);
-    m_user_count++;
-
-    init();
+    //描述符的注册不在这里：协议层只表达「关心什么事件」，注册由连接的所有者
+    //连同触发模式一并完成（见 Channel）
+    reset();
 }
 
-//初始化新接受的连接
-//check_state默认为分析请求行状态
-void http_conn::init()
+//复位到可处理下一个请求的状态。连接复用与新建连接走的是同一段逻辑
+void http_conn::reset()
 {
+    //上一次请求可能留下了文件映射。正常路径由 write() 释放，但请求处理到一半
+    //就出错的路径不会走到那里，因此在复用的入口处统一释放一次
+    unmap();
+
     mysql = NULL;
     bytes_to_send = 0;
     bytes_have_send = 0;
@@ -593,9 +541,6 @@ void http_conn::init()
     m_body_start = 0;
     m_write_idx = 0;
     cgi = 0;
-    m_state = 0;
-    timer_flag = 0;
-    improv = 0;
 
     //指向请求体与文件映射的指针必须显式复位：连接对象会被复用，
     //残留的上次取值会让 unmap 与判空逻辑作用于已失效的地址
@@ -1076,23 +1021,6 @@ http_conn::HTTP_CODE http_conn::process_read()
     return NO_REQUEST;
 }
 
-bool http_conn::rearm_epoll()
-{
-    if (bytes_to_send > 0)
-    {
-        //响应还没发完，继续关注可写
-        modfd(m_epollfd, m_sockfd, EPOLLOUT, m_TRIGMode);
-        return true;
-    }
-    if (m_read_idx > 0)
-    {
-        //请求已读完但响应尚未生成，正由工作线程处理；它随后会自行重新关注，
-        //这里只需告知调用方「还不能关」
-        return true;
-    }
-    return false;
-}
-
 bool http_conn::set_real_file(const char *relative_path)
 {
     const int written = snprintf(m_real_file, sizeof(m_real_file), "%s%s", doc_root, relative_path);
@@ -1274,8 +1202,8 @@ bool http_conn::write()
 
     if (bytes_to_send == 0)
     {
-        modfd(m_epollfd, m_sockfd, EPOLLIN, m_TRIGMode);
-        init();
+        m_want_read();
+        reset();
         return true;
     }
 
@@ -1287,7 +1215,7 @@ bool http_conn::write()
         {
             if (errno == EAGAIN)
             {
-                modfd(m_epollfd, m_sockfd, EPOLLOUT, m_TRIGMode);
+                m_want_write();
                 return true;
             }
             unmap();
@@ -1300,11 +1228,11 @@ bool http_conn::write()
         if (bytes_to_send <= 0)
         {
             unmap();
-            modfd(m_epollfd, m_sockfd, EPOLLIN, m_TRIGMode);
+            m_want_read();
 
             if (m_linger)
             {
-                init();
+                reset();
                 return true;
             }
             else
@@ -1583,23 +1511,21 @@ bool http_conn::process_write(HTTP_CODE ret)
     }
     return true;
 }
-void http_conn::process()
+bool http_conn::process()
 {
-    HTTP_CODE read_ret = process_read();
-    if (read_ret == NO_REQUEST)
+    const HTTP_CODE read_ret = process_read();
+    if (NO_REQUEST == read_ret)
     {
-        modfd(m_epollfd, m_sockfd, EPOLLIN, m_TRIGMode);
-        return;
+        //请求尚未收全，继续关注可读
+        m_want_read();
+        return true;
     }
+
     if (!process_write(read_ret))
-    {
-        //响应没能构造出来（写缓冲达到上限等），只有关闭这一条路。
-        //不能再往下走：close_conn 已把 m_sockfd 置为 -1，
-        //对它调用 epoll_ctl 只会得到 EBADF
-        close_conn();
-        return;
-    }
-    modfd(m_epollfd, m_sockfd, EPOLLOUT, m_TRIGMode);
+        return false; //响应没能构造出来（写缓冲达到上限等），交由调用方关闭
+
+    m_want_write();
+    return true;
 }
 
 //新增：文件上传功能代码

@@ -58,6 +58,7 @@ add_unit_test(event_loop_tests
     test_event_loop.cpp
     ${CMAKE_SOURCE_DIR}/net/event_loop.cpp
     ${CMAKE_SOURCE_DIR}/net/channel.cpp
+    ${CMAKE_SOURCE_DIR}/net/timer_queue.cpp
 )
 
 # 这批测试依赖跨线程唤醒，而唤醒一旦失效的表现是「循环永远等不到事件」——

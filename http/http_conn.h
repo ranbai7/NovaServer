@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <errno.h>
 #include <fcntl.h>
+#include <functional>
 #include <map>
 #include <netinet/in.h>
 #include <pthread.h>
@@ -87,26 +88,40 @@ public:
     };
 
 public:
-    http_conn() {}
+    http_conn()
+    {
+        //未注入通知器时也保证可调用：事件通知是协议层的可选依赖，
+        //缺省时退化为「什么也不做」，而不是在调用点抛 bad_function_call
+        m_want_read = [] {};
+        m_want_write = [] {};
+    }
     ~http_conn() {}
 
 public:
-    void init(int sockfd, const sockaddr_in &addr, char *root, int TRIGMode, int close_log);
-    void close_conn(bool real_close = true);
-    void process();
+    //事件注册权归连接的所有者：协议层只表达「接下来关心什么」，不再直接操作
+    //epoll。协议状态机里「请求还没收全 -> 继续读」「响应就绪 -> 转去写」本来就是
+    //解析逻辑的一部分，留在这里最自然，改动也只有几处调用点
+    using EventCallback = std::function<void()>;
+    void set_event_notifier(EventCallback want_read, EventCallback want_write);
+
+    void init(int sockfd, const sockaddr_in &addr, const char *root, int TRIGMode, int close_log);
+    //返回 false 表示该连接应当关闭，释放动作交给调用方的唯一出口
+    bool process();
     bool read_once();
     bool write();
     const sockaddr_in *get_address() const { return &m_address; }
-    //重新激活 epoll 关注，返回 false 表示该连接已无待办、可以关闭。
-    //EPOLLONESHOT 下每次事件后关注都会失效，若某次事件由不触发读写的分支
-    //消费掉（例如对端半关闭），必须重新激活，否则该连接再无事件可达
-    bool rearm_epoll();
-    void initmysql_result(connection_pool *connPool);
-    int timer_flag;
-    int improv;
+    //加载用户表到进程内的缓存。与任何连接实例无关，因此在启动期一次性调用；
+    //日志开关作为参数传入，因为静态函数里没有连接成员可读
+    static void initmysql_result(connection_pool *connPool, int close_log);
+    //释放文件映射。连接在任何时刻关闭都要调用它：映射可能建立在一次尚未
+    //写出响应的请求上，而那条路径不经过 write() 里的释放
+    void unmap();
+    //是否还有未完成的工作：已收到但尚未处理的请求，或已生成但尚未发完的响应。
+    //对端半关闭时据此判断能否立即关闭连接——两者都还在等本端动作
+    bool has_pending_work() const { return m_read_idx > 0 || bytes_to_send > 0; }
 
 private:
-    void init();
+    void reset();
     HTTP_CODE process_read();
     bool process_write(HTTP_CODE ret);
     HTTP_CODE parse_request_line(char *text);
@@ -120,7 +135,6 @@ private:
     bool set_real_file(const char *relative_path);
     char *get_line() { return m_read_buf.data() + m_start_line; };
     LINE_STATUS parse_line();
-    void unmap();
     bool add_response(const char *format, ...);
     bool add_content(const char *content);
     bool add_status_line(int status, const char *title);
@@ -144,8 +158,6 @@ private:
     void init_file_upload_state();                   // 重置上传状态
 
 public:
-    static int m_epollfd;
-    static int m_user_count;
     MYSQL *mysql;
     int m_state; //读为0, 写为1
 
@@ -179,10 +191,14 @@ private:
     char *m_string; //存储请求头数据
     int bytes_to_send;
     int bytes_have_send;
-    char *doc_root;
+    const char *doc_root; //指向服务器持有的根目录，不拥有
 
     int m_TRIGMode;
     int m_close_log;
+
+    //「接下来关心什么事件」由这两处表达，实际注册由所有者完成
+    EventCallback m_want_read;
+    EventCallback m_want_write;
 
     // ========== 文件上传新增成员变量 ==========
     bool m_is_file_upload;      // 是否为文件上传请求

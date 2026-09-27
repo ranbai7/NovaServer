@@ -31,13 +31,19 @@ EventLoop::EventLoop() : m_epollfd(-1), m_wakeupfd(-1), m_quitting(false), m_thr
     m_wakeup_channel->enable_reading();
 
     m_events.resize(kMaxEvents);
+
+    //定时器队列同样属于本线程，构造顺序要求 epoll 实例已经就绪
+    m_timer_queue.reset(new TimerQueue(this));
 }
 
 EventLoop::~EventLoop()
 {
-    //顺序有依赖：先把唤醒通道从事件表摘除并关闭 eventfd，再关 epoll。
-    //待执行任务里可能持有连接的最后一份引用，先于两者清掉
+    //顺序有依赖：先清待执行任务与连接注册表——两者都可能持有连接的最后一份
+    //引用，而连接的析构要访问定时器队列，因此它们必须排在定时器队列之前。
+    //唤醒通道则要在关闭 eventfd 之前摘除
     m_pending_functors.clear();
+    m_connections.clear();
+    m_timer_queue.reset();
 
     if (m_wakeup_channel)
     {
@@ -171,4 +177,16 @@ void EventLoop::remove_channel(Channel *channel)
         std::perror("epoll_ctl DEL");
 
     channel->set_in_epoll(false);
+}
+
+void EventLoop::add_connection(const std::shared_ptr<void> &conn)
+{
+    m_connections.insert(conn);
+}
+
+void EventLoop::remove_connection(const std::shared_ptr<void> &conn)
+{
+    //按值捕获、入队后再擦除：连接的关闭往往由它自己的回调触发，立刻擦除会让
+    //注册表持有的那份引用（也可能是最后一份）在回调栈内析构连接对象
+    queue_in_loop([this, conn] { m_connections.erase(conn); });
 }

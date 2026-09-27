@@ -8,9 +8,11 @@
 #include <mutex>
 #include <sys/epoll.h>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include "channel.h"
+#include "timer_queue.h"
 
 //单线程事件循环：一个 epoll 实例、一个用于跨线程唤醒的 eventfd，以及一个待执行
 //任务队列。归属约定是结构性的——所有事件处理、连接状态与超时定时器都只在本线程内
@@ -41,6 +43,17 @@ public:
     void update_channel(Channel *channel);
     void remove_channel(Channel *channel);
 
+    //连接注册表。只在循环线程内访问，因此无需加锁——放在 EventLoop 而不是
+    //服务器主类，是因为它必须与该线程的循环同生命周期：连接在循环线程内析构。
+    //元素类型取 shared_ptr<void> 是为了不让事件循环依赖连接类型，否则任何
+    //用到 EventLoop 的地方都会被拖去链接整个协议层
+    void add_connection(const std::shared_ptr<void> &conn);
+    //延迟擦除。连接的关闭往往由它自己的回调触发，立刻擦除会让最后一个
+    //shared_ptr 在回调栈内析构连接对象
+    void remove_connection(const std::shared_ptr<void> &conn);
+
+    TimerQueue *timer_queue() const { return m_timer_queue.get(); }
+
     bool is_in_loop_thread() const { return m_thread_id == std::this_thread::get_id(); }
 
 private:
@@ -57,6 +70,11 @@ private:
     std::mutex m_mutex;
     std::vector<Functor> m_pending_functors;
     std::vector<epoll_event> m_events;
+
+    //在构造时创建：构造发生在目标线程内，timerfd 与它的 Channel 注册都需要
+    //该线程的 epoll 实例
+    std::unique_ptr<TimerQueue> m_timer_queue;
+    std::unordered_set<std::shared_ptr<void>> m_connections;
 };
 
 #endif
