@@ -1,10 +1,16 @@
 #include "http_conn.h"
+#include "../auth/password_hash.h"
 #include "url_codec.h"
 
+#include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <mysql/mysql.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <vector>
 
 //定义http响应的一些状态信息
 const char *ok_200_title = "OK";
@@ -110,6 +116,93 @@ std::map<std::string, std::string> parse_form_body(const char *body, long length
     return params;
 }
 
+//启动期致命错误：日志开关可能被关闭，因此始终同时写标准错误
+[[noreturn]] void fatal(const char *format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    std::vfprintf(stderr, format, args);
+    va_end(args);
+    std::fputc('\n', stderr);
+    std::exit(EXIT_FAILURE);
+}
+
+//预处理语句的字符串参数绑定。
+//MYSQL_BIND 中的 length 是指针，直接指向临时变量会留下悬垂指针，
+//因此把长度变量与绑定数组放在同一处持有
+class StringBinder
+{
+public:
+    explicit StringBinder(size_t count) : m_binds(count), m_lengths(count, 0) {}
+
+    void set(size_t index, const std::string &value)
+    {
+        m_lengths[index] = value.size();
+        m_binds[index].buffer_type = MYSQL_TYPE_STRING;
+        m_binds[index].buffer = const_cast<char *>(value.data());
+        m_binds[index].buffer_length = m_lengths[index];
+        m_binds[index].length = &m_lengths[index];
+    }
+
+    MYSQL_BIND *data() { return m_binds.data(); }
+
+private:
+    std::vector<MYSQL_BIND> m_binds;
+    std::vector<unsigned long> m_lengths;
+};
+
+//执行一条带两个字符串参数的写语句，参数不参与 SQL 文本拼接
+bool execute_two_params(MYSQL *conn, const char *sql, const std::string &first, const std::string &second)
+{
+    MYSQL_STMT *stmt = mysql_stmt_init(conn);
+    if (stmt == nullptr)
+        return false;
+
+    bool ok = false;
+    if (mysql_stmt_prepare(stmt, sql, static_cast<unsigned long>(std::strlen(sql))) == 0)
+    {
+        StringBinder binder(2);
+        binder.set(0, first);
+        binder.set(1, second);
+        if (mysql_stmt_bind_param(stmt, binder.data()) == 0)
+            ok = (mysql_stmt_execute(stmt) == 0);
+    }
+    mysql_stmt_close(stmt);
+    return ok;
+}
+
+//哈希串比明文长得多，旧表的 char(50) 存不下。列宽不足时先加宽，
+//否则失败会推迟到注册或迁移写入时才暴露
+const long kPasswordColumnLength = 255;
+
+void ensure_password_column(MYSQL *conn)
+{
+    static const char kQuery[] = "SELECT CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS "
+                                 "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'user' "
+                                 "AND COLUMN_NAME = 'passwd'";
+    if (mysql_query(conn, kQuery) != 0)
+        fatal("查询 user.passwd 列定义失败: %s", mysql_error(conn));
+
+    MYSQL_RES *result = mysql_store_result(conn);
+    if (result == nullptr)
+        fatal("读取 user.passwd 列定义失败: %s", mysql_error(conn));
+
+    MYSQL_ROW row = mysql_fetch_row(result);
+    const bool too_narrow =
+        (row != nullptr && row[0] != nullptr && std::strtol(row[0], nullptr, 10) < kPasswordColumnLength);
+    mysql_free_result(result);
+
+    if (!too_narrow)
+        return;
+
+    static const char kAlter[] = "ALTER TABLE user MODIFY passwd VARCHAR(255)";
+    if (mysql_query(conn, kAlter) != 0)
+        fatal("加宽 user.passwd 列失败: %s", mysql_error(conn));
+
+    //此处不使用 LOG_WARN 宏：它展开后依赖调用作用域的 m_close_log 成员，本函数并无此成员
+    std::fprintf(stderr, "user.passwd 列已加宽至 VARCHAR(%ld) 以容纳口令哈希\n", kPasswordColumnLength);
+}
+
 enum class RegisterResult
 {
     kInserted,
@@ -118,9 +211,8 @@ enum class RegisterResult
 };
 
 //注册用户：在锁内完成「查重 → 写库 → 更新内存」的完整序列，
-//使判重与插入之间不存在竞态窗口。
-//写库使用预处理语句绑参，用户名与口令不再参与 SQL 文本拼接
-RegisterResult register_user(const std::string &name, const std::string &passwd, MYSQL *conn)
+//使判重与插入之间不存在竞态窗口
+RegisterResult register_user(const std::string &name, const std::string &password, MYSQL *conn)
 {
     g_users_lock.lock();
     if (g_users.find(name) != g_users.end())
@@ -129,35 +221,13 @@ RegisterResult register_user(const std::string &name, const std::string &passwd,
         return RegisterResult::kDuplicate;
     }
 
-    bool inserted = false;
-    MYSQL_STMT *stmt = mysql_stmt_init(conn);
-    if (stmt != nullptr)
-    {
-        static const char kInsertSql[] = "INSERT INTO user(username, passwd) VALUES(?, ?)";
-        if (mysql_stmt_prepare(stmt, kInsertSql, sizeof(kInsertSql) - 1) == 0)
-        {
-            unsigned long name_len = name.size();
-            unsigned long passwd_len = passwd.size();
-            MYSQL_BIND bind[2] = {};
-
-            bind[0].buffer_type = MYSQL_TYPE_STRING;
-            bind[0].buffer = const_cast<char *>(name.data());
-            bind[0].buffer_length = name_len;
-            bind[0].length = &name_len;
-
-            bind[1].buffer_type = MYSQL_TYPE_STRING;
-            bind[1].buffer = const_cast<char *>(passwd.data());
-            bind[1].buffer_length = passwd_len;
-            bind[1].length = &passwd_len;
-
-            if (mysql_stmt_bind_param(stmt, bind) == 0)
-                inserted = (mysql_stmt_execute(stmt) == 0);
-        }
-        mysql_stmt_close(stmt);
-    }
+    //库中只保存加盐哈希，明文不落库
+    const std::string encoded = password_hash::encode(password);
+    const bool inserted =
+        !encoded.empty() && execute_two_params(conn, "INSERT INTO user(username, passwd) VALUES(?, ?)", name, encoded);
 
     if (inserted)
-        g_users[name] = passwd;
+        g_users[name] = encoded;
     g_users_lock.unlock();
     return inserted ? RegisterResult::kInserted : RegisterResult::kFailed;
 }
@@ -168,6 +238,9 @@ void http_conn::initmysql_result(connection_pool *connPool)
     //先从连接池中取一个连接
     MYSQL *mysql = NULL;
     connectionRAII mysqlcon(&mysql, connPool);
+
+    //确保 passwd 列足以容纳哈希串
+    ensure_password_column(mysql);
 
     //在user表中检索username，passwd数据，浏览器端输入
     if (mysql_query(mysql, "SELECT username,passwd FROM user"))
@@ -188,9 +261,26 @@ void http_conn::initmysql_result(connection_pool *connPool)
     g_users_lock.lock();
     while (MYSQL_ROW row = mysql_fetch_row(result))
     {
-        std::string temp1(row[0]);
-        std::string temp2(row[1]);
-        g_users[temp1] = temp2;
+        const std::string name(row[0] != nullptr ? row[0] : "");
+        std::string stored(row[1] != nullptr ? row[1] : "");
+        if (name.empty())
+            continue;
+
+        //历史遗留的明文记录在此升级为哈希，使库中不再留存明文。
+        //升级失败必须终止启动：否则该账号会带着明文留在内存中而校验永远不通过，
+        //表现为「口令正确却登录失败」，比启动失败更难定位
+        if (!password_hash::is_encoded(stored))
+        {
+            const std::string encoded = password_hash::encode(stored);
+            if (encoded.empty())
+                fatal("为用户 %s 生成口令哈希失败", name.c_str());
+            if (!execute_two_params(mysql, "UPDATE user SET passwd = ? WHERE username = ?", encoded, name))
+                fatal("升级用户 %s 的口令失败: %s", name.c_str(), mysql_error(mysql));
+
+            LOG_INFO("已将用户 %s 的明文口令升级为加盐哈希", name.c_str());
+            stored = encoded;
+        }
+        g_users[name] = stored;
     }
     g_users_lock.unlock();
 
@@ -670,8 +760,9 @@ http_conn::HTTP_CODE http_conn::do_request()
         //若浏览器端输入的用户名和密码在表中可以查找到，返回1，否则返回0
         else if (*(p + 1) == '2')
         {
+            //库中保存的是加盐哈希，因此只能按哈希校验，不能直接比对原文
             std::string stored_passwd;
-            if (lookup_user(name, stored_passwd) && stored_passwd == password)
+            if (lookup_user(name, stored_passwd) && password_hash::verify(password, stored_passwd))
                 strcpy(m_url, "/welcome.html");
             else
                 strcpy(m_url, "/logError.html");

@@ -47,3 +47,9 @@ add_unit_test(config_tests
     test_config.cpp
     ${CMAKE_SOURCE_DIR}/config.cpp
 )
+
+add_unit_test(password_hash_tests
+    test_password_hash.cpp
+    ${CMAKE_SOURCE_DIR}/auth/password_hash.cpp
+)
+target_link_libraries(password_hash_tests PRIVATE OpenSSL::Crypto)

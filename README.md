@@ -17,6 +17,10 @@ Linux 下 C++ 轻量级 Web 服务器，在 **线程池 + Epoll (ET) + Reactor/P
   增加了基于文件扩展名的 MIME 类型映射（`get_mime_type`），为静态资源响应添加正确的 `Content-Type` 头，解决了部分浏览器直接显示 HTML 源码或乱码的问题。
 - **上传路径安全**  
   上传文件名自动去除路径前缀，防止目录穿越攻击。
+- **静态资源路径规范化**  
+  请求路径先解码 `%XX` 再规范化，越出站点根目录的路径被拒绝，避免任意文件读取。
+- **口令加盐哈希**  
+  注册与登录使用 PBKDF2-HMAC-SHA256 校验，库中不保存明文；历史明文记录在启动时自动升级。
 - **路由扩展**  
   新增 `/8`（上传页面）和 `/upload`（上传接口）路由，与原有登录/注册/图片视频等功能无缝集成。
 
@@ -141,12 +145,14 @@ Linux 下 C++ 轻量级 Web 服务器，在 **线程池 + Epoll (ET) + Reactor/P
     USE yourdb;
     CREATE TABLE user(
         username char(50) NULL,
-        passwd char(50) NULL
+        passwd varchar(255) NULL
     )ENGINE=InnoDB;
 
     // 添加数据
     INSERT INTO user(username, passwd) VALUES('name', 'passwd');
     ```
+
+    口令在库中以**加盐哈希**（PBKDF2-HMAC-SHA256）保存。直接插入明文同样可用：服务端启动时会把明文记录自动升级为哈希，并在需要时把 `passwd` 列加宽到 `varchar(255)`，因此上述建表语句即使沿用旧的 `char(50)` 也能自动修正。
 
 * 准备配置文件
 

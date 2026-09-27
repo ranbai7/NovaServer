@@ -31,6 +31,7 @@ set(NOVASERVER_SOURCES
     webserver.cpp
     config.cpp
     http/http_conn.cpp
+    auth/password_hash.cpp
     timer/lst_timer.cpp
     log/log.cpp
     CGImysql/sql_connection_pool.cpp
@@ -46,9 +47,13 @@ find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(MYSQLCLIENT REQUIRED IMPORTED_TARGET mysqlclient)
 
+# OpenSSL 仅用于口令的 PBKDF2-HMAC-SHA256
+find_package(OpenSSL REQUIRED)
+
 target_link_libraries(server PRIVATE
     Threads::Threads
     PkgConfig::MYSQLCLIENT
+    OpenSSL::Crypto
 )
 
 # ---- 警告 ----
