@@ -35,6 +35,7 @@ set(NOVASERVER_SOURCES
     net/event_loop.cpp
     net/timer_queue.cpp
     net/signal_watcher.cpp
+    net/event_loop_thread_pool.cpp
     net/socket_utils.cpp
     net/acceptor.cpp
     net/tcp_connection.cpp

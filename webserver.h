@@ -9,6 +9,7 @@
 #include "config.h"
 #include "net/acceptor.h"
 #include "net/event_loop.h"
+#include "net/event_loop_thread_pool.h"
 #include "net/signal_watcher.h"
 #include "net/tcp_connection.h"
 
@@ -61,11 +62,13 @@ private:
     int m_sql_num;
 
     // ---- 运行期 ----
-    //声明顺序即析构顺序的逆序：事件循环必须最后析构，因为连接与定时器都要
-    //在它之前释放
+    //成员的析构按声明顺序的逆序进行，而这里的顺序是有意的：
+    //线程池最先析构（它会 join 所有子线程，子循环与连接随之结束），
+    //然后是监听与信号，最后才是主循环——它们都要访问主循环
     std::unique_ptr<EventLoop> m_loop;
     std::unique_ptr<SignalWatcher> m_signals;
     std::unique_ptr<Acceptor> m_acceptor;
+    std::unique_ptr<EventLoopThreadPool> m_thread_pool;
 
     char *m_root;
     connection_pool *m_connPool;

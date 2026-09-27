@@ -105,6 +105,9 @@ void WebServer::init(const Config &config)
     m_acceptor.reset(new Acceptor(m_loop.get(), m_port, m_listen_trig_mode, m_OPT_LINGER, m_close_log));
     m_acceptor->set_new_connection_callback([this](int connfd, const sockaddr_in &peer)
                                             { on_new_connection(connfd, peer); });
+
+    //子 Reactor 线程池，连接按轮转分配给它们
+    m_thread_pool.reset(new EventLoopThreadPool(m_loop.get(), m_thread_num));
 }
 
 void WebServer::log_write()
@@ -161,6 +164,9 @@ void WebServer::run()
     m_signals.reset(new SignalWatcher(m_loop.get(), {SIGTERM, SIGINT}));
     m_signals->set_callback([this](int) { m_loop->quit(); });
 
+    //线程池在建线程之前启动信号接管：信号掩码是线程属性，子线程会继承
+    //创建时的掩码，晚屏蔽就无效了
+    m_thread_pool->start();
     m_acceptor->start();
     m_loop->loop();
 }
@@ -183,17 +189,24 @@ void WebServer::on_new_connection(int connfd, const sockaddr_in &peer)
         return;
     }
 
-    EventLoop *loop = m_loop.get();
-    const std::shared_ptr<TcpConnection> conn =
-        std::make_shared<TcpConnection>(loop, connfd, peer, m_root, m_conn_trig_mode, m_close_log, IDLE_TIMEOUT_MS);
-    conn->set_close_callback([this](const std::shared_ptr<TcpConnection> &closed) { on_connection_closed(closed); });
+    //连接归某个子循环所有：把建立过程投递到那个线程，此后它的读写、协议解析
+    //与超时定时器都在那里完成，跨线程只传递这一次连接对象
+    EventLoop *loop = m_thread_pool->next_loop();
+    loop->run_in_loop(
+        [this, loop, connfd, peer]
+        {
+            const std::shared_ptr<TcpConnection> conn = std::make_shared<TcpConnection>(
+                loop, connfd, peer, m_root, m_conn_trig_mode, m_close_log, IDLE_TIMEOUT_MS);
+            conn->set_close_callback([this](const std::shared_ptr<TcpConnection> &closed)
+                                     { on_connection_closed(closed); });
 
-    //顺序固定：先登记再启动。start() 里注册的定时器持有连接的弱引用，
-    //要求它此前已经被 shared_ptr 持有
-    loop->add_connection(conn);
-    conn->start();
+            //顺序固定：先登记再启动。start() 里注册的定时器持有连接的弱引用，
+            //要求它此前已经被 shared_ptr 持有
+            loop->add_connection(conn);
+            conn->start();
+        });
 
-    LOG_INFO("new connection from %s, active: %ld", inet_ntoa(peer.sin_addr), m_conn_count.load());
+    LOG_INFO("new connection, active: %ld", m_conn_count.load());
 }
 
 void WebServer::on_connection_closed(const std::shared_ptr<TcpConnection> &conn)
