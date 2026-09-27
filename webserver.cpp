@@ -186,7 +186,12 @@ void WebServer::eventListen()
         LOG_ERROR("bind to port %d failed", m_port);
         exit(EXIT_FAILURE);
     }
-    if (listen(m_listenfd, 5) < 0)
+    //backlog 取 512（内核会自行截断到 net.core.somaxconn）。此前的 5 太小：
+    //突发建立连接时 accept 队列溢出，溢出的连接要被客户端重传 SYN 才能建立。
+    //实测 wrk 以 100 并发起压，ET 监听的两个组合出现约 10 个请求超时、
+    //P99 达 340~370ms，而同条件下 LT 监听只有 5~11ms
+    //（LT 下每次可读事件都紧接一次 accept，队列排空虽细碎却持续）
+    if (listen(m_listenfd, 512) < 0)
     {
         LOG_ERROR("listen failed");
         exit(EXIT_FAILURE);
@@ -272,7 +277,9 @@ bool WebServer::dealclientdata()
         int connfd = accept(m_listenfd, (struct sockaddr *)&client_address, &client_addrlength);
         if (connfd < 0)
         {
-            LOG_ERROR("%s:errno is:%d", "accept error", errno);
+            //EAGAIN 表示此刻没有待处理的连接，不是错误；LT 下下次可读事件会再来
+            if (errno != EAGAIN && errno != EWOULDBLOCK)
+                LOG_ERROR("%s:errno is:%d", "accept error", errno);
             return false;
         }
         if (http_conn::m_user_count >= MAX_FD)
@@ -291,6 +298,13 @@ bool WebServer::dealclientdata()
             int connfd = accept(m_listenfd, (struct sockaddr *)&client_address, &client_addrlength);
             if (connfd < 0)
             {
+                //待处理的连接已取完，是 ET 循环的正常出口
+                if (errno == EAGAIN || errno == EWOULDBLOCK)
+                    break;
+                //被信号打断（SIGALRM 未设 SA_RESTART）或该连接在 accept 前已被对端中止。
+                //这两种情况下队列里可能还有连接，而 ET 不会再通知，因此必须重试
+                if (errno == EINTR || errno == ECONNABORTED)
+                    continue;
                 LOG_ERROR("%s:errno is:%d", "accept error", errno);
                 break;
             }
@@ -464,12 +478,6 @@ void WebServer::eventLoop()
                 if (false == flag)
                     continue;
             }
-            else if (events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR))
-            {
-                //服务器端关闭连接，移除对应的定时器
-                util_timer *timer = users_timer[sockfd].timer;
-                deal_timer(timer, sockfd);
-            }
             //处理信号
             else if ((sockfd == m_pipefd[0]) && (events[i].events & EPOLLIN))
             {
@@ -482,9 +490,26 @@ void WebServer::eventLoop()
             {
                 dealwithread(sockfd);
             }
+            //继续发送尚未发完的响应
             else if (events[i].events & EPOLLOUT)
             {
                 dealwithwrite(sockfd);
+            }
+            //对端已挂断、半关闭或出错。此前这一分支排在读写之前，于是客户端
+            //「发完请求就 shutdown 写端」时连接被直接关闭，请求与响应都丢了
+            //（且因接收缓冲区尚有未读数据，内核发出的是 RST）
+            else if (events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR))
+            {
+                //只有确实无事可做时才关闭：请求可能刚读完、正由工作线程处理，
+                //响应也可能还没发完，两者都还要用这条连接。还有待办时必须重新
+                //激活关注——本次事件已被这一分支消费，ONESHOT 下不重新激活
+                //就没有下一次事件了（发送缓冲满时 EPOLLOUT 不置位，事件里带的
+                //是 EPOLLRDHUP，实测会让大文件下载卡在半途）
+                if (!users[sockfd].rearm_epoll())
+                {
+                    util_timer *timer = users_timer[sockfd].timer;
+                    deal_timer(timer, sockfd);
+                }
             }
         }
         if (timeout)

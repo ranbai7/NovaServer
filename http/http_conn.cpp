@@ -748,7 +748,11 @@ bool http_conn::read_once()
             }
             else if (bytes_read == 0)
             {
-                return false;
+                //对端已关闭，但本次可能刚读到过数据：ET 循环读到 EAGAIN 才停，
+                //而「发完请求就关闭写端」的客户端会让这次循环以 recv 返回 0 收尾。
+                //此时若直接返回 false，调用方会关闭连接，刚收到的请求就丢了——
+                //缓冲区非空时应当先把这批数据交给上层处理
+                return m_read_idx > 0;
             }
             m_read_idx += bytes_read;
         }
@@ -1070,6 +1074,23 @@ http_conn::HTTP_CODE http_conn::process_read()
     }
 
     return NO_REQUEST;
+}
+
+bool http_conn::rearm_epoll()
+{
+    if (bytes_to_send > 0)
+    {
+        //响应还没发完，继续关注可写
+        modfd(m_epollfd, m_sockfd, EPOLLOUT, m_TRIGMode);
+        return true;
+    }
+    if (m_read_idx > 0)
+    {
+        //请求已读完但响应尚未生成，正由工作线程处理；它随后会自行重新关注，
+        //这里只需告知调用方「还不能关」
+        return true;
+    }
+    return false;
 }
 
 bool http_conn::set_real_file(const char *relative_path)

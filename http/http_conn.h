@@ -97,6 +97,10 @@ public:
     bool read_once();
     bool write();
     const sockaddr_in *get_address() const { return &m_address; }
+    //重新激活 epoll 关注，返回 false 表示该连接已无待办、可以关闭。
+    //EPOLLONESHOT 下每次事件后关注都会失效，若某次事件由不触发读写的分支
+    //消费掉（例如对端半关闭），必须重新激活，否则该连接再无事件可达
+    bool rearm_epoll();
     void initmysql_result(connection_pool *connPool);
     int timer_flag;
     int improv;
