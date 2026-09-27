@@ -32,19 +32,15 @@ RESULT_DIR="${RESULT_DIR:-$REPO_ROOT/test_pressure/results}"
 mkdir -p "$RESULT_DIR"
 RAW_FILE="$RESULT_DIR/raw_$(date +%Y%m%d_%H%M%S).txt"
 
-# 参数组合: "<触发模式> <并发模型> <线程数>"，对应 ./server -m -a -t
+# 参数组合: "<触发模式> <子 Reactor 线程数>"，对应 ./server -m -t
 COMBOS=(
-  "0 0 8"
-  "1 0 8"
-  "2 0 8"
-  "3 0 8"
-  "0 1 8"
-  "1 1 8"
-  "2 1 8"
-  "3 1 8"
-  "0 0 1"
-  "0 0 2"
-  "0 0 4"
+  "0 8"
+  "1 8"
+  "2 8"
+  "3 8"
+  "0 1"
+  "0 2"
+  "0 4"
 )
 
 SUMMARY=()
@@ -83,7 +79,7 @@ environment_info() {
 }
 
 start_server() {
-  (cd "$REPO_ROOT" && exec ./server -p "$PORT" -m "$1" -a "$2" -t "$3" -c 1) >/dev/null 2>&1 &
+  (cd "$REPO_ROOT" && exec ./server -p "$PORT" -m "$1" -t "$2" -c 1) >/dev/null 2>&1 &
   SERVER_PID=$!
   for _ in $(seq 1 50); do
     if ss -lnt 2>/dev/null | grep -q ":${PORT} "; then return 0; fi
@@ -100,14 +96,14 @@ stop_server() {
 }
 
 run_group() {
-  local m=$1 a=$2 t=$3
-  local label="-m $m -a $a -t $t"
+  local m=$1 t=$2
+  local label="-m $m -t $t"
   local qps=() p50=() p99=() rss=""
 
   log "### $label"
 
   for i in $(seq 1 "$REPEATS"); do
-    if ! start_server "$m" "$a" "$t"; then
+    if ! start_server "$m" "$t"; then
       log "  启动失败，跳过"
       stop_server
       return 1
@@ -136,7 +132,7 @@ run_group() {
 
   log "  -- 中位数: QPS=$mq  P50=${m50}ms  P99=${m99}ms  RSS=${rss}MB"
   log ""
-  SUMMARY+=("| $m | $a | $t | $mq | $m50 | $m99 | $rss |")
+  SUMMARY+=("| $m | $t | $mq | $m50 | $m99 | $rss |")
 }
 
 main() {
@@ -148,8 +144,8 @@ main() {
   done
 
   log "=== 汇总（中位数）==="
-  log "| 触发模式 | 并发模型 | 线程数 | QPS | P50 (ms) | P99 (ms) | RSS (MB) |"
-  log "|:--:|:--:|--:|--:|--:|--:|--:|"
+  log "| 触发模式 | 子 Reactor 线程数 | QPS | P50 (ms) | P99 (ms) | RSS (MB) |"
+  log "|:--:|--:|--:|--:|--:|--:|"
   for row in "${SUMMARY[@]}"; do log "$row"; done
   log ""
   log "原始输出已保存至: $RAW_FILE"

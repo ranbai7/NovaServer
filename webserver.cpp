@@ -81,6 +81,15 @@ void WebServer::init(const Config &config)
         exit(EXIT_FAILURE);
     }
 
+    //子 Reactor 线程数不得为负。0 是合法取值——不建子线程，全部连接归主循环，
+    //用于与多线程分发做对照；负数则只会被线程池静默当作 0，让「改了参数却没生效」
+    //看起来像是没有收益，因此在启动阶段直接拦下
+    if (m_thread_num < 0)
+    {
+        std::fprintf(stderr, "子 Reactor 线程数非法: %d（须不小于 0）\n", m_thread_num);
+        exit(EXIT_FAILURE);
+    }
+
     //把站点根目录解析为规范化的绝对路径：既去掉 ./ 与重复的 /，
     //也顺带确认该目录确实存在——否则每个请求都会走到 stat 失败为止，问题暴露得太晚。
     //此处尚未初始化日志（日志初始化需要用到配置），因此只能写标准错误

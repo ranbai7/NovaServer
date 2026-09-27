@@ -37,7 +37,6 @@ public:
     int PORT;
     int TRIGMode;
     int OPT_LINGER;
-    int actor_model;
     int thread_num;
     int close_log;
     std::string root_dir;

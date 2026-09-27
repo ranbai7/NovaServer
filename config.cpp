@@ -70,7 +70,6 @@ Config::Config()
     PORT = 9006;
     TRIGMode = 0; //listenfd 与 connfd 均为 LT
     OPT_LINGER = 0;
-    actor_model = 0; //Proactor
     thread_num = 8;
     close_log = 0;
     root_dir = "./root";
@@ -179,7 +178,6 @@ bool Config::apply(std::map<std::string, std::string> &items, std::string &error
     int_item("server", "port", PORT);
     int_item("server", "trig_mode", TRIGMode);
     int_item("server", "opt_linger", OPT_LINGER);
-    int_item("server", "actor_model", actor_model);
     int_item("server", "thread_num", thread_num);
     int_item("server", "close_log", close_log);
     str_item("server", "root_dir", root_dir);
@@ -230,7 +228,7 @@ int Config::int_arg(const char *text, const char *name) const
 void Config::parse_arg(int argc, char *argv[])
 {
     int opt;
-    const char *str = "p:l:m:o:s:t:c:a:f:";
+    const char *str = "p:l:m:o:s:t:c:f:";
     while ((opt = getopt(argc, argv, str)) != -1)
     {
         switch (opt)
@@ -277,12 +275,6 @@ void Config::parse_arg(int argc, char *argv[])
             m_cli_keys.insert("close_log");
             break;
         }
-        case 'a':
-        {
-            actor_model = int_arg(optarg, "a");
-            m_cli_keys.insert("actor_model");
-            break;
-        }
         case 'f':
         {
             config_file = optarg;
@@ -290,7 +282,10 @@ void Config::parse_arg(int argc, char *argv[])
             break;
         }
         default:
-            break;
+            //未知参数在此终止启动。静默忽略会掩盖「参数名写错」，而 -a 这类
+            //已被移除的参数被忽略时，使用者会以为它仍然生效
+            std::fprintf(stderr, "无法识别的参数: -%c\n", optopt);
+            std::exit(EXIT_FAILURE);
         }
     }
 }
