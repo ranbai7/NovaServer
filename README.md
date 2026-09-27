@@ -4,7 +4,9 @@ NovaServer
 ===============
 [![CI](https://github.com/ranbai7/NovaServer/actions/workflows/ci.yml/badge.svg)](https://github.com/ranbai7/NovaServer/actions/workflows/ci.yml)
 
-Linux 下 C++ 轻量级 Web 服务器，在 **线程池 + Epoll (ET) + Reactor/Proactor** 高并发架构的基础上，新增文件上传功能，并修复了静态资源 MIME 类型等实用性细节。
+Linux 下 C++ 轻量级 Web 服务器，并发模型为**主从 Reactor（one loop per thread）**：主线程只负责 accept，新连接按轮转策略分发给若干子 Reactor 线程，每个线程持有独立的 epoll 实例与事件循环；连接的文件描述符、协议解析状态与其超时定时器全部归属所属线程。在此基础上新增文件上传功能，并修复了静态资源 MIME 类型等实用性细节。
+
+架构细节见 [docs/architecture.md](docs/architecture.md)。
 
 > **项目来源**：本项目的架构设计参考自开源项目 [qinguoyi/TinyWebServer](https://github.com/qinguoyi/TinyWebServer)（MIT 协议），在其基础上进行二次开发与重构。原项目版权归原作者所有，详见 [LICENSE](LICENSE)。
 
@@ -27,12 +29,15 @@ Linux 下 C++ 轻量级 Web 服务器，在 **线程池 + Epoll (ET) + Reactor/P
   新增 `/8`（上传页面）和 `/upload`（上传接口）路由，与原有登录/注册/图片视频等功能无缝集成。
 
 ---
-## 原项目描述
-* 使用 **线程池 + 非阻塞socket + epoll(ET和LT均实现) + 事件处理(Reactor和模拟Proactor均实现)** 的并发模型
-* 使用**状态机**解析HTTP请求报文，支持解析**GET和POST**请求
-* 访问服务器数据库实现web端用户**注册、登录**功能，可以请求服务器**图片和视频文件**
+## 项目特性
+
+* 并发模型为**主从 Reactor（one loop per thread）**：主线程只 accept，新连接按轮转策略分发给子 Reactor 线程
+* 事件源统一为 **epoll + timerfd + eventfd + signalfd**：定时器、跨线程唤醒与退出信号都是文件描述符，没有信号处理函数
+* 使用**状态机**解析 HTTP 请求报文，支持 **GET / POST / HEAD**
+* 访问服务器数据库实现 web 端用户**注册、登录**功能，口令以 PBKDF2-HMAC-SHA256 加盐哈希保存，不保存明文
 * 实现**同步/异步日志系统**，记录服务器运行状态
-* 经Webbench压力测试可以实现**上万的并发连接**数据交换
+* 支持 `multipart/form-data` 文件上传，上传内容受扩展名白名单与体积上限约束，下载一律按附件处理
+* 单元测试覆盖路径规范化、配置解析、事件循环、定时器队列等模块
 
 
 目录
@@ -45,21 +50,23 @@ Linux 下 C++ 轻量级 Web 服务器，在 **线程池 + Epoll (ET) + Reactor/P
 概述
 ----------
 
-> * C/C++
-> * B/S模型
-> * [线程同步机制包装类](https://github.com/qinguoyi/TinyWebServer/tree/master/lock)
-> * [http连接请求处理类](https://github.com/qinguoyi/TinyWebServer/tree/master/http)
-> * [半同步/半反应堆线程池](https://github.com/qinguoyi/TinyWebServer/tree/master/threadpool)
-> * [定时器处理非活动连接](https://github.com/qinguoyi/TinyWebServer/tree/master/timer)
-> * [同步/异步日志系统 ](https://github.com/qinguoyi/TinyWebServer/tree/master/log)  
-> * [数据库连接池](https://github.com/qinguoyi/TinyWebServer/tree/master/CGImysql) 
-> * [同步线程注册和登录校验](https://github.com/qinguoyi/TinyWebServer/tree/master/CGImysql) 
-> * [简易服务器压力测试](https://github.com/qinguoyi/TinyWebServer/tree/master/test_presure)
+> * C/C++，B/S 模型
+> * [事件循环与通道](net/event_loop.h) — epoll 实例、跨线程唤醒、待执行任务队列
+> * [监听器](net/acceptor.h) — 监听套接字、接受新连接、描述符耗尽的兜底
+> * [连接](net/tcp_connection.h) — 连接生命周期、读写处理、持有协议对象
+> * [子 Reactor 线程池](net/event_loop_thread_pool.h) — 子线程与轮转分配
+> * [定时器队列](net/timer_queue.h) — 基于 timerfd 的空闲连接回收
+> * [http 连接请求处理类](http/http_conn.h) — 状态机解析与响应组装
+> * [同步/异步日志系统](log/log.h)
+> * [数据库连接池](CGImysql/sql_connection_pool.h)
+> * [并发原语包装类](lock/locker.h)
+> * [简易服务器压力测试](test_pressure/)
 
 
 框架
 -------------
-<div align=center><img src="http://ww1.sinaimg.cn/large/005TJ2c7ly1ge0j1atq5hj30g60lm0w4.jpg" height="765"/> </div>
+
+各模块的职责划分、连接的归属约定与一次请求的事件流，见 [docs/architecture.md](docs/architecture.md)。
 
 界面展示
 ----------
@@ -97,33 +104,21 @@ Linux 下 C++ 轻量级 Web 服务器，在 **线程池 + Epoll (ET) + Reactor/P
 
 压力测试
 -------------
-在关闭日志后，使用Webbench对服务器进行压力测试，对listenfd和connfd分别采用ET和LT模式，均可实现上万的并发连接，下面列出的是两者组合后的测试结果. 
 
-> * Proactor，LT + LT，93251 QPS
+工具为 `wrk`，`-c100`，服务端以 `-c 1` 关闭日志，每组 5 次取中位数。子 Reactor 线程数的影响：
 
-<div align=center><img src="http://ww1.sinaimg.cn/large/005TJ2c7ly1gfjqu2hptkj30gz07474n.jpg" height="201"/> </div>
+| `-t` | QPS | P50 (ms) | P99 (ms) |
+|--:|--:|--:|--:|
+| 0（单循环，对照） | 25315 | 3.59 | 46.73 |
+| 1 | 27141 | 3.53 | 7.18 |
+| **2** | **45918** | **2.10** | **3.41** |
+| 4 | 32739 | 2.89 | 9.02 |
 
-> * Proactor，LT + ET，97459 QPS
+测试机的 4 个 vCPU 实为 2 物理核 + 超线程，且 wrk 与服务端同机，因此 2 个子线程即已占满可用并行度，更多线程反而带来调度开销。完整的环境说明与数据见 [docs/changes/027-short-connection-crash.md](docs/changes/027-short-connection-crash.md)；重构前的基线见 [docs/changes/021-baseline-after-fixes.md](docs/changes/021-baseline-after-fixes.md)。
 
-<div align=center><img src="http://ww1.sinaimg.cn/large/005TJ2c7ly1gfjr1xppdgj30h206zdg6.jpg" height="201"/> </div>
+压测脚本见 [test_pressure/bench.sh](test_pressure/bench.sh)。
 
-> * Proactor，ET + LT，80498 QPS
-
-<div align=center><img src="http://ww1.sinaimg.cn/large/005TJ2c7ly1gfjr24vmjtj30gz0720t3.jpg" height="201"/> </div>
-
-> * Proactor，ET + ET，92167 QPS
-
-<div align=center><img src="http://ww1.sinaimg.cn/large/005TJ2c7ly1gfjrflrebdj30gz06z0t3.jpg" height="201"/> </div>
-
-> * Reactor，LT + ET，69175 QPS
-
-<div align=center><img src="http://ww1.sinaimg.cn/large/005TJ2c7ly1gfjr1humcbj30h207474n.jpg" height="201"/> </div>
-
-> * 并发连接总数：10500
-> * 访问服务器时间：5s
-> * 所有访问均成功
-
-**注意：** 使用本项目的webbench进行压测时，若报错显示webbench命令找不到，将可执行文件webbench删除后，重新编译即可。
+> **已知缺陷**：短连接（每个请求新建连接）高频施压下服务端会崩溃，尚未定位到根因，详见 `027`。长连接与功能验证不受影响。
 
 
 快速运行
@@ -205,7 +200,7 @@ ctest --test-dir build --output-on-failure
 ------
 
 ```C++
-./build/server [-p port] [-l LOGWrite] [-m TRIGMode] [-o OPT_LINGER] [-s sql_num] [-t thread_num] [-c close_log] [-a actor_model] [-f config_file]
+./build/server [-p port] [-l LOGWrite] [-m TRIGMode] [-o OPT_LINGER] [-s sql_num] [-t thread_num] [-c close_log] [-f config_file]
 ```
 
 温馨提示:以上参数不是非必须，不用全部使用，根据个人情况搭配选用即可.
@@ -226,14 +221,12 @@ ctest --test-dir build --output-on-failure
 	* 1，使用
 * -s，数据库连接数量
 	* 默认为8
-* -t，线程数量
+* -t，子 Reactor 线程数
 	* 默认为8
+	* 0 表示不建子线程，全部连接归主循环（用于与多线程分发对照）
 * -c，关闭日志，默认打开
 	* 0，打开日志
 	* 1，关闭日志
-* -a，选择反应堆模型，默认Proactor
-	* 0，Proactor模型
-	* 1，Reactor模型
 * -f，指定配置文件路径
 	* 默认 `./config.ini`，文件不存在时使用内置默认值
 	* 显式指定却找不到文件时终止启动
@@ -241,7 +234,7 @@ ctest --test-dir build --output-on-failure
 测试示例命令与含义
 
 ```C++
-./build/server -p 9007 -l 1 -m 0 -o 1 -s 10 -t 10 -c 1 -a 1
+./build/server -p 9007 -l 1 -m 0 -o 1 -s 10 -t 4 -c 1
 ```
 
 - [x] 端口9007
@@ -249,9 +242,8 @@ ctest --test-dir build --output-on-failure
 - [x] 使用LT + LT组合
 - [x] 使用优雅关闭连接
 - [x] 数据库连接池内有10条连接
-- [x] 线程池内有10条线程
+- [x] 4 个子 Reactor 线程
 - [x] 关闭日志
-- [x] Reactor反应堆模型
 
 
 致谢

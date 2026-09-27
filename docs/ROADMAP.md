@@ -27,7 +27,9 @@ NovaServer 当前采用一套经典的高并发服务器结构：**线程池 + �
 | 可验证性 | 建立单元测试与持续集成，为改动提供回归保障 |
 | 可观测性 | 完善日志系统，建立可复现的性能基线与对比数据 |
 
-## 三、现有架构
+## 三、优化前的架构
+
+> 本节记录**重构前**的结构，用于说明各项改动的动机。当前架构见 [architecture.md](architecture.md)。
 
 ### 运行结构
 
@@ -35,8 +37,8 @@ NovaServer 当前采用一套经典的高并发服务器结构：**线程池 + �
 |:--|:--|:--|
 | 服务器主类 | `webserver.cpp` / `webserver.h` | 持有监听套接字与 epoll 实例，主循环中分发事件，调度定时器 |
 | 协议处理 | `http/http_conn.cpp` | 每连接一个对象，三状态状态机解析请求，`mmap` + `writev` 发送响应 |
-| 线程池 | `threadpool/threadpool.h` | 半同步/半反应堆模型，主线程 accept 后投递任务 |
-| 定时器 | `timer/lst_timer.cpp` | 升序双向链表管理超时连接，`SIGALRM` + socketpair 触发检查 |
+| 线程池 | `threadpool/threadpool.h` | 半同步/半反应堆模型，主线程 accept 后投递任务（阶段三已删除） |
+| 定时器 | `timer/lst_timer.cpp` | 升序双向链表管理超时连接，`SIGALRM` + socketpair 触发检查（阶段三已删除） |
 | 数据库 | `CGImysql/sql_connection_pool.cpp` | 连接池单例，RAII 方式借用与归还 |
 | 日志 | `log/log.cpp` | 单例日志，支持同步与异步两种写入方式 |
 
@@ -193,6 +195,19 @@ epoll_wait
 - 连接对象改为动态管理，解除按最大连接数预分配
 - 描述符耗尽时预留空闲描述符兜底，保证 accept 能力不丢失
 - 命令行参数语义调整：线程数参数的含义由「工作线程数」变为「子 Reactor 线程数」，原有触发模式参数保持不变
+
+**推进情况**（截至 2026-09-27）：
+
+| 批次 | 内容 | 状态 |
+|:--|:--|:--|
+| 3.1 | `EventLoop` 与 `Channel` 基础层（`022`） | 已完成 |
+| 3.2 | timerfd 统一定时器、signalfd 接管退出信号（`023`） | 已完成 |
+| 3.3 | 主循环切换为单 loop Reactor（`024`） | 已完成 |
+| 3.4 | 子 Reactor 线程池与轮转分发（`026`） | 实现完成，分发与压测对比已验证（`027`）；**连接风暴场景确认存在崩溃**，TSan 与优雅退出验证待补 |
+| 3.5 | 移除 `-a`、线程数校验、EMFILE 兜底验证（`028`） | 已完成 |
+| 3.6 | `architecture.md` 与 README / ROADMAP 更新 | 已完成 |
+
+当前架构见 [architecture.md](architecture.md)。
 
 ### 阶段四 · 性能优化与验证
 

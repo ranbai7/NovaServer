@@ -7,7 +7,7 @@
 | 文档 | 说明 |
 |:--|:--|
 | [ROADMAP.md](ROADMAP.md) | 优化路线图：分阶段目标、技术方案与推进进度 |
-| `architecture.md` | 系统架构说明（并发模型重构完成后补充） |
+| [architecture.md](architecture.md) | 系统架构说明：并发模型、模块结构、连接生命周期 |
 | `changes/` | 各项优化的详细记录（随优化进展新增） |
 
 ## 记录规范
