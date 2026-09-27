@@ -67,21 +67,130 @@ bool lookup_user(const std::string &name, std::string &passwd)
     return found;
 }
 
+//十六进制字符取值，非十六进制字符返回 -1
+int hex_value(char c)
+{
+    if (c >= '0' && c <= '9')
+        return c - '0';
+    if (c >= 'a' && c <= 'f')
+        return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F')
+        return c - 'A' + 10;
+    return -1;
+}
+
+//解码 %XX 转义。plus_as_space 为真时把 '+' 一并还原为空格——
+//这是表单请求体与查询串的约定，而路径中的 '+' 是字面量，不参与还原
+std::string url_decode(const std::string &in, bool plus_as_space)
+{
+    std::string out;
+    out.reserve(in.size());
+    for (size_t i = 0; i < in.size(); ++i)
+    {
+        if (in[i] == '%' && i + 2 < in.size())
+        {
+            int hi = hex_value(in[i + 1]);
+            int lo = hex_value(in[i + 2]);
+            if (hi >= 0 && lo >= 0)
+            {
+                out.push_back(static_cast<char>((hi << 4) | lo));
+                i += 2;
+                continue;
+            }
+        }
+        else if (in[i] == '+' && plus_as_space)
+        {
+            out.push_back(' ');
+            continue;
+        }
+        out.push_back(in[i]);
+    }
+    return out;
+}
+
+//解析 application/x-www-form-urlencoded 请求体：字段以 '&' 分隔，
+//键与值以第一个 '=' 分隔。字段缺失、为空或任意长都不会越界，
+//也不依赖字段名、顺序或长度等任何固定假设
+std::map<std::string, std::string> parse_form_body(const char *body, long length)
+{
+    std::map<std::string, std::string> params;
+    if (body == nullptr || length <= 0)
+        return params;
+
+    const std::string data(body, static_cast<size_t>(length));
+    size_t pos = 0;
+    while (pos <= data.size())
+    {
+        size_t amp = data.find('&', pos);
+        if (amp == std::string::npos)
+            amp = data.size();
+
+        const std::string field = data.substr(pos, amp - pos);
+        const size_t eq = field.find('=');
+        if (eq != std::string::npos)
+        {
+            const std::string key = url_decode(field.substr(0, eq), true);
+            if (!key.empty())
+                params[key] = url_decode(field.substr(eq + 1), true);
+        }
+
+        if (amp == data.size())
+            break;
+        pos = amp + 1;
+    }
+    return params;
+}
+
+enum class RegisterResult
+{
+    kInserted,
+    kDuplicate,
+    kFailed
+};
+
 //注册用户：在锁内完成「查重 → 写库 → 更新内存」的完整序列，
-//使判重与插入之间不存在竞态窗口。返回 false 表示用户名已存在或写库失败
-bool register_user(const std::string &name, const std::string &passwd, MYSQL *conn, const char *sql_insert)
+//使判重与插入之间不存在竞态窗口。
+//写库使用预处理语句绑参，用户名与口令不再参与 SQL 文本拼接
+RegisterResult register_user(const std::string &name, const std::string &passwd, MYSQL *conn)
 {
     g_users_lock.lock();
     if (g_users.find(name) != g_users.end())
     {
         g_users_lock.unlock();
-        return false;
+        return RegisterResult::kDuplicate;
     }
-    int res = mysql_query(conn, sql_insert);
-    if (res == 0)
+
+    bool inserted = false;
+    MYSQL_STMT *stmt = mysql_stmt_init(conn);
+    if (stmt != nullptr)
+    {
+        static const char kInsertSql[] = "INSERT INTO user(username, passwd) VALUES(?, ?)";
+        if (mysql_stmt_prepare(stmt, kInsertSql, sizeof(kInsertSql) - 1) == 0)
+        {
+            unsigned long name_len = name.size();
+            unsigned long passwd_len = passwd.size();
+            MYSQL_BIND bind[2] = {};
+
+            bind[0].buffer_type = MYSQL_TYPE_STRING;
+            bind[0].buffer = const_cast<char *>(name.data());
+            bind[0].buffer_length = name_len;
+            bind[0].length = &name_len;
+
+            bind[1].buffer_type = MYSQL_TYPE_STRING;
+            bind[1].buffer = const_cast<char *>(passwd.data());
+            bind[1].buffer_length = passwd_len;
+            bind[1].length = &passwd_len;
+
+            if (mysql_stmt_bind_param(stmt, bind) == 0)
+                inserted = (mysql_stmt_execute(stmt) == 0);
+        }
+        mysql_stmt_close(stmt);
+    }
+
+    if (inserted)
         g_users[name] = passwd;
     g_users_lock.unlock();
-    return res == 0;
+    return inserted ? RegisterResult::kInserted : RegisterResult::kFailed;
 }
 } // namespace
 
@@ -539,37 +648,33 @@ http_conn::HTTP_CODE http_conn::do_request()
         //将请求路径映射为根目录下的实际文件路径
         snprintf(m_real_file + len, FILENAME_LEN - len, "/%s", m_url + 2);
 
-        //将用户名和密码提取出来
-        //user=123&passwd=123
-        char name[100], password[100];
-        int i;
-        for (i = 5; m_string[i] != '&'; ++i)
-            name[i - 5] = m_string[i];
-        name[i - 5] = '\0';
+        //按 form-urlencoded 规则解析请求体，字段名与顺序都不再是解析前提
+        const std::map<std::string, std::string> params = parse_form_body(m_string, m_content_length);
+        auto user_it = params.find("user");
+        auto passwd_it = params.find("password");
+        if (user_it == params.end() || passwd_it == params.end() || user_it->second.empty())
+            return BAD_REQUEST;
 
-        int j = 0;
-        for (i = i + 10; m_string[i] != '\0'; ++i, ++j)
-            password[j] = m_string[i];
-        password[j] = '\0';
+        const std::string &name = user_it->second;
+        const std::string &password = passwd_it->second;
 
         if (*(p + 1) == '3')
         {
             //如果是注册，先检测数据库中是否有重名的
             //没有重名的，进行增加数据
-            char *sql_insert = (char *)malloc(sizeof(char) * 200);
-            strcpy(sql_insert, "INSERT INTO user(username, passwd) VALUES(");
-            strcat(sql_insert, "'");
-            strcat(sql_insert, name);
-            strcat(sql_insert, "', '");
-            strcat(sql_insert, password);
-            strcat(sql_insert, "')");
-
-            if (register_user(name, password, mysql, sql_insert))
+            switch (register_user(name, password, mysql))
+            {
+            case RegisterResult::kInserted:
                 strcpy(m_url, "/log.html");
-            else
+                break;
+            case RegisterResult::kDuplicate:
                 strcpy(m_url, "/registerError.html");
-
-            free(sql_insert);
+                break;
+            case RegisterResult::kFailed:
+                LOG_ERROR("register user failed, mysql error:%s", mysql_error(mysql));
+                strcpy(m_url, "/registerError.html");
+                break;
+            }
         }
         //如果是登录，直接判断
         //若浏览器端输入的用户名和密码在表中可以查找到，返回1，否则返回0
