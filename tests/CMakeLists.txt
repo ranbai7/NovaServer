@@ -42,3 +42,8 @@ add_unit_test(log_tests
 add_unit_test(url_codec_tests
     test_url_codec.cpp
 )
+
+add_unit_test(config_tests
+    test_config.cpp
+    ${CMAKE_SOURCE_DIR}/config.cpp
+)

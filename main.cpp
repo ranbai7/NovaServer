@@ -1,22 +1,41 @@
 #include "config.h"
-#include <sys/stat.h>
+#include "webserver.h"
+
+#include <cstdio>
+#include <cstdlib>
+#include <string>
 
 int main(int argc, char *argv[])
 {
-    //需要修改的数据库信息,登录名,密码,库名
-    std::string user = "root";
-    std::string passwd = "123456";
-    std::string databasename = "yourdb";
-
-    //命令行解析
+    //命令行解析：先取到 -f 指定的配置文件路径，并记录显式给出的键
     Config config;
     config.parse_arg(argc, argv);
+
+    //配置文件取值，再与命令行取值合并（命令行优先）
+    std::string error;
+    switch (config.load(config.config_file, error))
+    {
+    case Config::LoadResult::kLoaded:
+        break;
+    case Config::LoadResult::kNotFound:
+        //-f 显式指定却找不到文件，多半是路径写错，不应静默回退
+        if (config.config_file_explicit)
+        {
+            std::fprintf(stderr, "%s\n", error.c_str());
+            return EXIT_FAILURE;
+        }
+        std::fprintf(stderr, "未找到 %s，使用内置默认值（数据库口令等需经配置文件或命令行提供）\n",
+                     config.config_file.c_str());
+        break;
+    case Config::LoadResult::kError:
+        std::fprintf(stderr, "%s\n", error.c_str());
+        return EXIT_FAILURE;
+    }
 
     WebServer server;
 
     //初始化
-    server.init(config.PORT, user, passwd, databasename, config.LOGWrite, config.OPT_LINGER, config.TRIGMode,
-                config.sql_num, config.thread_num, config.close_log, config.actor_model);
+    server.init(config);
 
     //日志
     server.log_write();

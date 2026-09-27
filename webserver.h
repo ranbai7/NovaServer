@@ -14,6 +14,7 @@
 
 #include "./http/http_conn.h"
 #include "./threadpool/threadpool.h"
+#include "config.h"
 
 const int MAX_FD = 65536;           //最大文件描述符
 const int MAX_EVENT_NUMBER = 10000; //最大事件数
@@ -25,8 +26,7 @@ public:
     WebServer();
     ~WebServer();
 
-    void init(int port, const std::string &user, const std::string &passWord, const std::string &databaseName,
-              int log_write, int opt_linger, int trigmode, int sql_num, int thread_num, int close_log, int actor_model);
+    void init(const Config &config);
 
     void thread_pool();
     void sql_pool();
@@ -54,11 +54,20 @@ public:
     int m_epollfd;
     http_conn *users;
 
+    //日志相关
+    std::string m_log_dir;
+    std::string m_log_file;
+    int m_log_buf_size;
+    int m_log_split_lines;
+    int m_log_queue_size;
+
     //数据库相关
     connection_pool *m_connPool;
-    std::string m_user;         //登陆数据库用户名
-    std::string m_passWord;     //登陆数据库密码
-    std::string m_databaseName; //使用数据库名
+    std::string m_db_host;     //数据库主机
+    int m_db_port;             //数据库端口
+    std::string m_db_user;     //登陆数据库用户名
+    std::string m_db_password; //登陆数据库密码
+    std::string m_db_name;     //使用数据库名
     int m_sql_num;
 
     //线程池相关

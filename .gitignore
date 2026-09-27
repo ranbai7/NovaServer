@@ -7,8 +7,12 @@ build/
 build-*/
 tags
 
+# ===== 本地配置 =====
+# 仓库提供 config.example.ini 作为模板，实际取值的配置不入库（含数据库口令）
+config.ini
+
 # ===== 运行时日志 =====
-*_ServerLog
+ServerLog/
 *.log
 
 # ===== 压测原始输出 =====

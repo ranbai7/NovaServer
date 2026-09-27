@@ -85,6 +85,10 @@ bool Log::init(const char *file_name, int close_log, int log_buf_size, int split
 
 void Log::write_log(int level, const char *format, ...)
 {
+    //init 失败时文件指针为空。日志是辅助设施，此时应静默丢弃而不是影响主流程
+    if (m_fp == nullptr)
+        return;
+
     struct timeval now = {0, 0};
     gettimeofday(&now, NULL);
     time_t t = now.tv_sec;

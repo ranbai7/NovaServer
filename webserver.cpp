@@ -1,21 +1,19 @@
 #include "webserver.h"
 
+#include <cerrno>
+#include <climits>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <sys/stat.h>
+
 WebServer::WebServer()
 {
     //http_conn类对象
     users = new http_conn[MAX_FD];
 
-    //root文件夹路径
-    char server_path[200];
-    if (getcwd(server_path, sizeof(server_path)) == nullptr)
-    {
-        LOG_ERROR("getcwd failed, cannot determine working directory");
-        exit(EXIT_FAILURE);
-    }
-    char root[6] = "/root";
-    m_root = (char *)malloc(strlen(server_path) + strlen(root) + 1);
-    strcpy(m_root, server_path);
-    strcat(m_root, root);
+    //根目录在 init 中依据配置解析，此处先置空，保证析构函数不会释放未分配的指针
+    m_root = nullptr;
 
     //定时器
     users_timer = new client_data[MAX_FD];
@@ -33,21 +31,40 @@ WebServer::~WebServer()
     delete m_pool;
 }
 
-void WebServer::init(int port, const std::string &user, const std::string &passWord, const std::string &databaseName,
-                     int log_write, int opt_linger, int trigmode, int sql_num, int thread_num, int close_log,
-                     int actor_model)
+void WebServer::init(const Config &config)
 {
-    m_port = port;
-    m_user = user;
-    m_passWord = passWord;
-    m_databaseName = databaseName;
-    m_sql_num = sql_num;
-    m_thread_num = thread_num;
-    m_log_write = log_write;
-    m_OPT_LINGER = opt_linger;
-    m_TRIGMode = trigmode;
-    m_close_log = close_log;
-    m_actormodel = actor_model;
+    m_port = config.PORT;
+    m_log_write = config.LOGWrite;
+    m_OPT_LINGER = config.OPT_LINGER;
+    m_TRIGMode = config.TRIGMode;
+    m_close_log = config.close_log;
+    m_actormodel = config.actor_model;
+    m_thread_num = config.thread_num;
+    m_sql_num = config.sql_num;
+
+    m_log_dir = config.log_dir;
+    m_log_file = config.log_file;
+    m_log_buf_size = config.log_buf_size;
+    m_log_split_lines = config.log_split_lines;
+    m_log_queue_size = config.log_queue_size;
+
+    m_db_host = config.db_host;
+    m_db_port = config.db_port;
+    m_db_user = config.db_user;
+    m_db_password = config.db_password;
+    m_db_name = config.db_name;
+
+    //把站点根目录解析为规范化的绝对路径：既去掉 ./ 与重复的 /，
+    //也顺带确认该目录确实存在——否则每个请求都会走到 stat 失败为止，问题暴露得太晚。
+    //此处尚未初始化日志（日志初始化需要用到配置），因此只能写标准错误
+    char resolved[PATH_MAX];
+    if (realpath(config.root_dir.c_str(), resolved) == nullptr)
+    {
+        std::fprintf(stderr, "站点根目录不可用: %s (%s)\n", config.root_dir.c_str(), strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+    free(m_root);
+    m_root = strdup(resolved);
 }
 
 void WebServer::trig_mode()
@@ -80,13 +97,25 @@ void WebServer::trig_mode()
 
 void WebServer::log_write()
 {
-    if (0 == m_close_log)
+    if (0 != m_close_log)
+        return;
+
+    //日志目录不存在时先建立：Log::init 只负责打开文件，不会创建目录
+    if (mkdir(m_log_dir.c_str(), 0755) != 0 && errno != EEXIST)
     {
-        //初始化日志
-        if (1 == m_log_write)
-            Log::get_instance()->init("./ServerLog", m_close_log, 2000, 800000, 800);
-        else
-            Log::get_instance()->init("./ServerLog", m_close_log, 2000, 800000, 0);
+        std::fprintf(stderr, "创建日志目录 %s 失败: %s\n", m_log_dir.c_str(), strerror(errno));
+    }
+
+    //路径形如「目录/文件名」：Log::init 会把最后一个 '/' 之前的部分作为目录、
+    //之后的部分作为文件名，并在文件名前追加日期
+    const std::string path = m_log_dir + "/" + m_log_file;
+    const int queue_size = (1 == m_log_write) ? m_log_queue_size : 0;
+
+    if (!Log::get_instance()->init(path.c_str(), m_close_log, m_log_buf_size, m_log_split_lines, queue_size))
+    {
+        //日志文件打开失败时改为关闭日志：否则后续写日志会作用于空文件指针
+        std::fprintf(stderr, "日志文件 %s 打开失败，已关闭日志\n", path.c_str());
+        m_close_log = 1;
     }
 }
 
@@ -94,7 +123,7 @@ void WebServer::sql_pool()
 {
     //初始化数据库连接池
     m_connPool = connection_pool::GetInstance();
-    m_connPool->init("localhost", m_user, m_passWord, m_databaseName, 3306, m_sql_num, m_close_log);
+    m_connPool->init(m_db_host, m_db_user, m_db_password, m_db_name, m_db_port, m_sql_num, m_close_log);
 
     //初始化数据库读取表
     users->initmysql_result(m_connPool);
@@ -181,7 +210,8 @@ void WebServer::eventListen()
 
 void WebServer::timer(int connfd, struct sockaddr_in client_address)
 {
-    users[connfd].init(connfd, client_address, m_root, m_CONNTrigmode, m_close_log, m_user, m_passWord, m_databaseName);
+    users[connfd].init(connfd, client_address, m_root, m_CONNTrigmode, m_close_log, m_db_user, m_db_password,
+                       m_db_name);
 
     //初始化client_data数据
     //创建定时器，设置回调函数和超时时间，绑定用户数据，将定时器添加到链表中

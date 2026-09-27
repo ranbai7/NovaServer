@@ -148,14 +148,16 @@ Linux 下 C++ 轻量级 Web 服务器，在 **线程池 + Epoll (ET) + Reactor/P
     INSERT INTO user(username, passwd) VALUES('name', 'passwd');
     ```
 
-* 修改main.cpp中的数据库初始化信息
+* 准备配置文件
 
-    ```C++
-    //数据库登录名,密码,库名
-    string user = "root";
-    string passwd = "root";
-    string databasename = "yourdb";
+    仓库提供 `config.example.ini` 作为模板，其中包含监听端口、数据库连接、日志等全部可配置项。复制并按实际环境修改，**数据库口令写在这里而不是源码中**：
+
+    ```bash
+    cp config.example.ini config.ini
+    # 编辑 config.ini 中的 [database] 一节
     ```
+
+    `config.ini` 已被 `.gitignore` 忽略，不会被提交。命令行参数优先于配置文件，因此可以两者混用——把口令放在配置文件中，临时换端口时用 `-p` 覆盖。各配置项的含义见 `config.example.ini` 内的注释。
 
 * build
 
@@ -195,10 +197,11 @@ ctest --test-dir build --output-on-failure
 ------
 
 ```C++
-./build/server [-p port] [-l LOGWrite] [-m TRIGMode] [-o OPT_LINGER] [-s sql_num] [-t thread_num] [-c close_log] [-a actor_model]
+./build/server [-p port] [-l LOGWrite] [-m TRIGMode] [-o OPT_LINGER] [-s sql_num] [-t thread_num] [-c close_log] [-a actor_model] [-f config_file]
 ```
 
 温馨提示:以上参数不是非必须，不用全部使用，根据个人情况搭配选用即可.
+未给出的参数取自配置文件（默认 `./config.ini`，不存在时回退到内置默认值）。
 
 * -p，自定义端口号
 	* 默认9006
@@ -223,6 +226,9 @@ ctest --test-dir build --output-on-failure
 * -a，选择反应堆模型，默认Proactor
 	* 0，Proactor模型
 	* 1，Reactor模型
+* -f，指定配置文件路径
+	* 默认 `./config.ini`，文件不存在时使用内置默认值
+	* 显式指定却找不到文件时终止启动
 
 测试示例命令与含义
 
