@@ -9,9 +9,9 @@
 //定义http响应的一些状态信息
 const char *ok_200_title = "OK";
 const char *error_400_title = "Bad Request";
-const char *error_400_form = "Your request has bad syntax or is inherently impossible to staisfy.\n";
+const char *error_400_form = "Your request has bad syntax or is inherently impossible to satisfy.\n";
 const char *error_403_title = "Forbidden";
-const char *error_403_form = "You do not have permission to get file form this server.\n";
+const char *error_403_form = "You do not have permission to get file from this server.\n";
 const char *error_404_title = "Not Found";
 const char *error_404_form = "The requested file was not found on this server.\n";
 const char *error_500_title = "Internal Error";
@@ -590,6 +590,12 @@ http_conn::HTTP_CODE http_conn::process_read()
             return INTERNAL_ERROR;
         }
     }
+
+    //行结束符本身不合法（单独的 \n 或单独的 \r）时，后续数据再到达也无法拼出完整行，
+    //继续等待只会拖到超时，应直接判为错误请求
+    if (line_status == LINE_BAD)
+        return BAD_REQUEST;
+
     return NO_REQUEST;
 }
 
@@ -811,9 +817,9 @@ bool http_conn::add_content_length(int content_len)
 {
     return add_response("Content-Length:%d\r\n", content_len);
 }
-bool http_conn::add_content_type()
+bool http_conn::add_content_type(const char *type)
 {
-    return add_response("Content-Type:%s\r\n", "text/html");
+    return add_response("Content-Type:%s\r\n", type);
 }
 bool http_conn::add_linger()
 {
@@ -830,11 +836,16 @@ bool http_conn::add_content(const char *content)
 
 bool http_conn::process_write(HTTP_CODE ret)
 {
+    //错误响应的正文是纯文本，统一声明类型；此前这些响应没有任何 Content-Type，
+    //由客户端自行猜测
+    static const char *kErrorContentType = "text/plain; charset=utf-8";
+
     switch (ret)
     {
     case INTERNAL_ERROR:
     {
         add_status_line(500, error_500_title);
+        add_content_type(kErrorContentType);
         add_headers(strlen(error_500_form));
         if (!add_content(error_500_form))
             return false;
@@ -842,7 +853,20 @@ bool http_conn::process_write(HTTP_CODE ret)
     }
     case BAD_REQUEST:
     {
+        //请求本身不合法，返回 400；此前返回的是 404 与「文件未找到」文案
+        add_status_line(400, error_400_title);
+        add_content_type(kErrorContentType);
+        add_headers(strlen(error_400_form));
+        if (!add_content(error_400_form))
+            return false;
+        break;
+    }
+    case NO_RESOURCE:
+    {
+        //此前该状态没有对应分支，控制流落入 default 后连接被直接关闭，
+        //客户端收不到任何响应
         add_status_line(404, error_404_title);
+        add_content_type(kErrorContentType);
         add_headers(strlen(error_404_form));
         if (!add_content(error_404_form))
             return false;
@@ -851,6 +875,7 @@ bool http_conn::process_write(HTTP_CODE ret)
     case FORBIDDEN_REQUEST:
     {
         add_status_line(403, error_403_title);
+        add_content_type(kErrorContentType);
         add_headers(strlen(error_403_form));
         if (!add_content(error_403_form))
             return false;
@@ -861,7 +886,7 @@ bool http_conn::process_write(HTTP_CODE ret)
         add_status_line(200, ok_200_title);
 
         // ========== 新增：设置正确的 Content-Type ==========
-        add_response("Content-Type: %s\r\n", get_mime_type(m_real_file));
+        add_content_type(get_mime_type(m_real_file));
         // =================================================
 
         if (m_file_stat.st_size != 0)
