@@ -2,6 +2,7 @@
 #define HTTPCONNECTION_H
 #include <arpa/inet.h>
 #include <assert.h>
+#include <cstddef>
 #include <errno.h>
 #include <fcntl.h>
 #include <map>
@@ -20,6 +21,7 @@
 #include <sys/uio.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <vector>
 
 #include "../CGImysql/sql_connection_pool.h"
 #include "../lock/locker.h"
@@ -30,8 +32,12 @@ class http_conn
 {
 public:
     static const int FILENAME_LEN = 200;
+    //两个缓冲区按需扩容：下面两个常量为初始大小，上限见 MAX_*_SIZE。
+    //请求体超出上限时返回 413，而不是像此前那样把连接直接关掉
     static const int READ_BUFFER_SIZE = 2048;
     static const int WRITE_BUFFER_SIZE = 1024;
+    static const int MAX_REQUEST_SIZE = 8 * 1024 * 1024;
+    static const int MAX_RESPONSE_SIZE = 64 * 1024;
     enum METHOD
     {
         GET = 0,
@@ -59,8 +65,8 @@ public:
         FORBIDDEN_REQUEST,
         FILE_REQUEST,
         INTERNAL_ERROR,
+        REQUEST_TOO_LARGE,
         CLOSED_CONNECTION
-        //UPLOAD_SUCCESS      // 新增
     };
     enum LINE_STATUS
     {
@@ -93,7 +99,7 @@ private:
     HTTP_CODE parse_headers(char *text);
     HTTP_CODE parse_content(char *text);
     HTTP_CODE do_request();
-    char *get_line() { return m_read_buf + m_start_line; };
+    char *get_line() { return m_read_buf.data() + m_start_line; };
     LINE_STATUS parse_line();
     void unmap();
     bool add_response(const char *format, ...);
@@ -104,6 +110,11 @@ private:
     bool add_content_length(int content_length);
     bool add_linger();
     bool add_blank_line();
+
+    //缓冲区扩容：读缓冲不足时按几何级数增长，并把指向它的成员一并重新指向
+    bool ensure_read_space();
+    void grow_read_buffer(size_t size);
+    bool grow_write_buffer();
 
     // 新增：文件上传相关方法
     HTTP_CODE parse_multipart_content(); // 解析 multipart 请求体
@@ -119,12 +130,14 @@ public:
 private:
     int m_sockfd;
     sockaddr_in m_address;
-    char m_read_buf[READ_BUFFER_SIZE];
+    std::vector<char> m_read_buf;
     long m_read_idx;
     long m_checked_idx;
+    long m_body_start;
     int m_start_line;
-    char m_write_buf[WRITE_BUFFER_SIZE];
+    std::vector<char> m_write_buf;
     int m_write_idx;
+    bool m_oversized; //请求体已超过 MAX_REQUEST_SIZE
     CHECK_STATE m_check_state;
     METHOD m_method;
     char m_real_file[FILENAME_LEN];

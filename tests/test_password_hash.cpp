@@ -92,15 +92,21 @@ TEST(PasswordHash, RejectsMalformedStoredValues)
     const std::string good = password_hash::encode("pw");
     ASSERT_FALSE(good.empty());
 
-    EXPECT_FALSE(password_hash::verify("pw", ""));                                     //空
-    EXPECT_FALSE(password_hash::verify("pw", "pw"));                                   //无分隔符
-    EXPECT_FALSE(password_hash::verify("pw", "pbkdf2_sha256$100000$"));                //字段不足
-    EXPECT_FALSE(password_hash::verify("pw", "bcrypt$100000$AAAA$AAAA"));              //算法不符
-    EXPECT_FALSE(password_hash::verify("pw", with_iterations(good, "abc")));           //迭代次数非数字
-    EXPECT_FALSE(password_hash::verify("pw", with_iterations(good, "0")));             //迭代次数为 0
-    EXPECT_FALSE(password_hash::verify("pw", with_iterations(good, "99999999999")));   //迭代次数过大
-    EXPECT_FALSE(password_hash::verify("pw", with_iterations(good, "-1")));            //迭代次数为负
-    EXPECT_FALSE(password_hash::verify("pw", good.substr(0, good.size() - 2) + "A=")); //散列长度不对齐
+    EXPECT_FALSE(password_hash::verify("pw", ""));                                   //空
+    EXPECT_FALSE(password_hash::verify("pw", "pw"));                                 //无分隔符
+    EXPECT_FALSE(password_hash::verify("pw", "pbkdf2_sha256$100000$"));              //字段不足
+    EXPECT_FALSE(password_hash::verify("pw", "bcrypt$100000$AAAA$AAAA"));            //算法不符
+    EXPECT_FALSE(password_hash::verify("pw", with_iterations(good, "abc")));         //迭代次数非数字
+    EXPECT_FALSE(password_hash::verify("pw", with_iterations(good, "0")));           //迭代次数为 0
+    EXPECT_FALSE(password_hash::verify("pw", with_iterations(good, "99999999999"))); //迭代次数过大
+    EXPECT_FALSE(password_hash::verify("pw", with_iterations(good, "-1")));          //迭代次数为负
+
+    //散列字段换成 16 字节的 base64（24 字符），与 32 字节的推导结果长度不符。
+    //此处不能靠改写末尾字符来构造：base64 末组中不参与解码的低位被改变时，
+    //解出的字节可能与原值完全相同，那样的用例会时灵时不灵
+    const std::string short_hash = "AAAAAAAAAAAAAAAAAAAAAA==";
+    EXPECT_FALSE(password_hash::verify("pw", good.substr(0, good.rfind('$') + 1) + short_hash));
+    EXPECT_FALSE(password_hash::verify("pw", good.substr(0, good.rfind('$') + 1))); //散列字段为空
 }
 
 TEST(PasswordHash, UsesIterationCountFromStoredValue)

@@ -20,6 +20,8 @@ const char *error_403_title = "Forbidden";
 const char *error_403_form = "You do not have permission to get file from this server.\n";
 const char *error_404_title = "Not Found";
 const char *error_404_form = "The requested file was not found on this server.\n";
+const char *error_413_title = "Request Entity Too Large";
+const char *error_413_form = "The request is larger than this server is willing to process.\n";
 const char *error_500_title = "Internal Error";
 const char *error_500_form = "There was an unusual problem serving the request file.\n";
 
@@ -391,6 +393,7 @@ void http_conn::init()
     m_start_line = 0;
     m_checked_idx = 0;
     m_read_idx = 0;
+    m_body_start = 0;
     m_write_idx = 0;
     cgi = 0;
     m_state = 0;
@@ -406,8 +409,14 @@ void http_conn::init()
     // 新增：重置文件上传状态
     init_file_upload_state();
 
-    memset(m_read_buf, '\0', READ_BUFFER_SIZE);
-    memset(m_write_buf, '\0', WRITE_BUFFER_SIZE);
+    m_oversized = false;
+    //连接复用时不保留上次为超大请求扩容出来的缓冲，避免大请求之后内存被长期占用
+    if (m_read_buf.capacity() > static_cast<size_t>(READ_BUFFER_SIZE) * 4)
+        std::vector<char>().swap(m_read_buf);
+    m_read_buf.resize(READ_BUFFER_SIZE);
+    m_write_buf.resize(WRITE_BUFFER_SIZE);
+    memset(m_read_buf.data(), '\0', m_read_buf.size());
+    memset(m_write_buf.data(), '\0', m_write_buf.size());
     memset(m_real_file, '\0', FILENAME_LEN);
 }
 
@@ -445,20 +454,66 @@ http_conn::LINE_STATUS http_conn::parse_line()
     return LINE_OPEN;
 }
 
+//扩容读缓冲区。重分配之后缓冲区地址会变化，此前解析出的指针随之失效，
+//因此在这里把它们按同样的偏移重新指向新地址。
+//注意：凡是指向读缓冲区的成员都必须在下面一并调整
+void http_conn::grow_read_buffer(size_t size)
+{
+    const char *old_data = m_read_buf.data();
+    m_read_buf.resize(size);
+
+    const ptrdiff_t delta = m_read_buf.data() - old_data;
+    if (delta == 0)
+        return;
+
+    if (m_url != nullptr)
+        m_url += delta;
+    if (m_version != nullptr)
+        m_version += delta;
+    if (m_host != nullptr)
+        m_host += delta;
+    if (m_string != nullptr)
+        m_string += delta;
+}
+
+//确认读缓冲区仍有空余：不足则扩容，达到请求体积上限则标记超限
+bool http_conn::ensure_read_space()
+{
+    if (static_cast<size_t>(m_read_idx) < m_read_buf.size())
+        return true;
+
+    const size_t grown = m_read_buf.size() * 2;
+    if (grown > static_cast<size_t>(MAX_REQUEST_SIZE))
+    {
+        //请求体超过服务端允许的上限。这里不直接关闭连接，
+        //而是置位后交由 process_read / process_write 回应 413
+        m_oversized = true;
+        return false;
+    }
+
+    grow_read_buffer(grown);
+    return true;
+}
+
 //循环读取客户数据，直到无数据可读或对方关闭连接
 //非阻塞ET工作模式下，需要一次性将数据读完
 bool http_conn::read_once()
 {
-    if (m_read_idx >= READ_BUFFER_SIZE)
-    {
-        return false;
-    }
+    //已判定超限：不再读取，等待 413 发出
+    if (m_oversized)
+        return true;
+
     int bytes_read = 0;
 
     //LT读取数据
     if (0 == m_TRIGMode)
     {
-        bytes_read = recv(m_sockfd, m_read_buf + m_read_idx, READ_BUFFER_SIZE - m_read_idx, 0);
+        //缓冲区已满且不能继续扩容，交由 process_read 返回 413
+        if (!ensure_read_space())
+            return true;
+
+        bytes_read =
+            recv(m_sockfd, m_read_buf.data() + m_read_idx, m_read_buf.size() - static_cast<size_t>(m_read_idx), 0);
 
         //先判返回值再累加读索引：负数直接累加会破坏索引，后续解析将读到错误位置
         if (bytes_read < 0)
@@ -480,7 +535,11 @@ bool http_conn::read_once()
     {
         while (true)
         {
-            bytes_read = recv(m_sockfd, m_read_buf + m_read_idx, READ_BUFFER_SIZE - m_read_idx, 0);
+            if (!ensure_read_space())
+                break; //已超限，停止读取
+
+            bytes_read =
+                recv(m_sockfd, m_read_buf.data() + m_read_idx, m_read_buf.size() - static_cast<size_t>(m_read_idx), 0);
             if (bytes_read == -1)
             {
                 if (errno == EAGAIN || errno == EWOULDBLOCK)
@@ -567,6 +626,9 @@ http_conn::HTTP_CODE http_conn::parse_headers(char *text)
     {
         if (m_content_length != 0)
         {
+            //请求体的起点在此处记录一次。解析游标 m_checked_idx 会随每次按行扫描
+            //向后移动，不能用它推算请求体位置
+            m_body_start = m_checked_idx;
             m_check_state = CHECK_STATE_CONTENT;
             return NO_REQUEST;
         }
@@ -624,13 +686,15 @@ http_conn::HTTP_CODE http_conn::parse_headers(char *text)
 }
 
 //判断http请求是否被完整读入
-http_conn::HTTP_CODE http_conn::parse_content(char *text)
+http_conn::HTTP_CODE http_conn::parse_content([[maybe_unused]] char *text)
 {
-    if (m_read_idx >= (m_content_length + m_checked_idx))
+    //以 m_body_start 而非 m_checked_idx 为基准：后者会被 parse_line 推到读索引处
+    if (m_read_idx >= (m_content_length + m_body_start))
     {
-        text[m_content_length] = '\0';
-        //POST请求中最后为输入的用户名和密码
-        m_string = text;
+        //请求体由 Content-Length 定长界定，消费方都带长度读取（m_string 与
+        //m_content_length 成对使用），因此不在此处补写结束符——那个位置属于
+        //紧随其后的字节，写下结束符会把流水线中的下一个请求破坏掉
+        m_string = m_read_buf.data() + m_body_start;
         return GET_REQUEST;
     }
     return NO_REQUEST;
@@ -638,16 +702,32 @@ http_conn::HTTP_CODE http_conn::parse_content(char *text)
 
 http_conn::HTTP_CODE http_conn::process_read()
 {
+    //读取阶段已判定请求超出体积上限，无需再解析
+    if (m_oversized)
+        return REQUEST_TOO_LARGE;
+
     LINE_STATUS line_status = LINE_OK;
     HTTP_CODE ret = NO_REQUEST;
     char *text = 0;
 
-    while ((m_check_state == CHECK_STATE_CONTENT && line_status == LINE_OK) ||
-           ((line_status = parse_line()) == LINE_OK))
+    while (true)
     {
-        text = get_line();
-        m_start_line = m_checked_idx;
-        LOG_INFO("%s", text);
+        //请求体由 Content-Length 定长界定，不按行切分，因此内容阶段跳过 parse_line：
+        //对请求体调用它会在找不到行结束符时把 m_checked_idx 推到读索引处，
+        //使解析游标随每次读取向后漂移
+        if (m_check_state != CHECK_STATE_CONTENT)
+        {
+            line_status = parse_line();
+            if (line_status == LINE_OPEN)
+                break; //行未收完
+            if (line_status == LINE_BAD)
+                return BAD_REQUEST;
+
+            text = get_line();
+            m_start_line = m_checked_idx;
+            LOG_INFO("%s", text);
+        }
+
         switch (m_check_state)
         {
         case CHECK_STATE_REQUESTLINE:
@@ -673,18 +753,13 @@ http_conn::HTTP_CODE http_conn::process_read()
             ret = parse_content(text);
             if (ret == GET_REQUEST)
                 return do_request();
-            line_status = LINE_OPEN;
-            break;
+            //请求体尚未收完，等待后续数据
+            return NO_REQUEST;
         }
         default:
             return INTERNAL_ERROR;
         }
     }
-
-    //行结束符本身不合法（单独的 \n 或单独的 \r）时，后续数据再到达也无法拼出完整行，
-    //继续等待只会拖到超时，应直接判为错误请求
-    if (line_status == LINE_BAD)
-        return BAD_REQUEST;
 
     return NO_REQUEST;
 }
@@ -856,7 +931,7 @@ bool http_conn::write()
         }
         else
         {
-            m_iv[0].iov_base = m_write_buf + bytes_have_send;
+            m_iv[0].iov_base = m_write_buf.data() + bytes_have_send;
             m_iv[0].iov_len = m_iv[0].iov_len - bytes_have_send;
         }
 
@@ -877,22 +952,65 @@ bool http_conn::write()
         }
     }
 }
+//写缓冲区按需扩容，达到上限时返回 false，由调用方转为错误处理
+bool http_conn::grow_write_buffer()
+{
+    const size_t grown = m_write_buf.size() * 2;
+    if (grown > static_cast<size_t>(MAX_RESPONSE_SIZE))
+        return false;
+
+    m_write_buf.resize(grown); //新追加的部分会被置零
+    return true;
+}
+
 bool http_conn::add_response(const char *format, ...)
 {
-    if (m_write_idx >= WRITE_BUFFER_SIZE)
-        return false;
     va_list arg_list;
     va_start(arg_list, format);
-    int len = vsnprintf(m_write_buf + m_write_idx, WRITE_BUFFER_SIZE - 1 - m_write_idx, format, arg_list);
-    if (len >= (WRITE_BUFFER_SIZE - 1 - m_write_idx))
+
+    //空间不足时扩容后重试。vsnprintf 在截断时返回「本该写入的长度」，
+    //因此以它是否超出可用空间来判断是否需要重试
+    while (true)
     {
-        va_end(arg_list);
-        return false;
+        const size_t available = m_write_buf.size() - static_cast<size_t>(m_write_idx);
+        if (available == 0)
+        {
+            if (!grow_write_buffer())
+            {
+                va_end(arg_list);
+                return false;
+            }
+            continue;
+        }
+
+        //每次重试都要重新取一份参数，否则已被消费的 va_list 不能再次使用
+        va_list copy;
+        va_copy(copy, arg_list);
+        const int len = vsnprintf(m_write_buf.data() + m_write_idx, available, format, copy);
+        va_end(copy);
+
+        if (len < 0)
+        {
+            va_end(arg_list);
+            return false;
+        }
+        if (static_cast<size_t>(len) >= available)
+        {
+            if (!grow_write_buffer())
+            {
+                va_end(arg_list);
+                return false;
+            }
+            continue;
+        }
+
+        m_write_idx += len;
+        break;
     }
-    m_write_idx += len;
+
     va_end(arg_list);
 
-    LOG_INFO("request:%s", m_write_buf);
+    LOG_INFO("request:%s", m_write_buf.data());
 
     return true;
 }
@@ -963,6 +1081,18 @@ bool http_conn::process_write(HTTP_CODE ret)
             return false;
         break;
     }
+    case REQUEST_TOO_LARGE:
+    {
+        //请求体超限。余下的字节已无从处理，因此回应后关闭连接，
+        //而不沿用请求里的 keep-alive 意愿
+        m_linger = false;
+        add_status_line(413, error_413_title);
+        add_content_type(kErrorContentType);
+        add_headers(strlen(error_413_form));
+        if (!add_content(error_413_form))
+            return false;
+        break;
+    }
     case FORBIDDEN_REQUEST:
     {
         add_status_line(403, error_403_title);
@@ -983,7 +1113,7 @@ bool http_conn::process_write(HTTP_CODE ret)
         if (m_file_stat.st_size != 0)
         {
             add_headers(m_file_stat.st_size);
-            m_iv[0].iov_base = m_write_buf;
+            m_iv[0].iov_base = m_write_buf.data();
             m_iv[0].iov_len = m_write_idx;
             m_iv[1].iov_base = m_file_address;
             m_iv[1].iov_len = m_file_stat.st_size;
@@ -1043,7 +1173,7 @@ bool http_conn::process_write(HTTP_CODE ret)
     default:
         return false;
     }
-    m_iv[0].iov_base = m_write_buf;
+    m_iv[0].iov_base = m_write_buf.data();
     m_iv[0].iov_len = m_write_idx;
     m_iv_count = 1;
     bytes_to_send = m_write_idx;
