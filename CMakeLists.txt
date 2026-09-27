@@ -33,6 +33,8 @@ set(NOVASERVER_SOURCES
     http/http_conn.cpp
     net/channel.cpp
     net/event_loop.cpp
+    net/timer_queue.cpp
+    net/signal_watcher.cpp
     auth/password_hash.cpp
     timer/lst_timer.cpp
     log/log.cpp

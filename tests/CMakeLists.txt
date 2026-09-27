@@ -63,4 +63,14 @@ add_unit_test(event_loop_tests
 # 这批测试依赖跨线程唤醒，而唤醒一旦失效的表现是「循环永远等不到事件」——
 # 即测试挂住而不是断言失败。加超时把这种情况变成一次明确的失败
 set_tests_properties(event_loop_tests PROPERTIES TIMEOUT 30)
+
+# 统一事件源：定时器来自 timerfd、信号来自 signalfd，同样只能在运行时验证
+add_unit_test(timer_queue_tests
+    test_timer_queue.cpp
+    ${CMAKE_SOURCE_DIR}/net/event_loop.cpp
+    ${CMAKE_SOURCE_DIR}/net/channel.cpp
+    ${CMAKE_SOURCE_DIR}/net/timer_queue.cpp
+    ${CMAKE_SOURCE_DIR}/net/signal_watcher.cpp
+)
+set_tests_properties(timer_queue_tests PROPERTIES TIMEOUT 30)
 target_link_libraries(password_hash_tests PRIVATE OpenSSL::Crypto)
