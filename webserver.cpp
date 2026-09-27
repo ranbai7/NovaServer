@@ -27,6 +27,7 @@ WebServer::~WebServer()
     close(m_listenfd);
     close(m_pipefd[1]);
     close(m_pipefd[0]);
+    free(m_root);
     delete[] users;
     delete[] users_timer;
     delete m_pool;

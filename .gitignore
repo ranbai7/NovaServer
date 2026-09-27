@@ -4,6 +4,7 @@ webbench
 *.o
 core
 build/
+build-*/
 tags
 
 # ===== 运行时日志 =====

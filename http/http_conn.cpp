@@ -48,8 +48,42 @@ static const char *get_mime_type(const char *path)
     return "application/octet-stream";
 }
 
-locker m_lock;
-std::map<std::string, std::string> users;
+namespace
+{
+//已注册用户的用户名与口令。该表被多个工作线程并发读写，
+//因此全部访问都收敛到下面两个加锁封装中，避免出现「写侧加锁、读侧裸读」的不对称同步
+std::map<std::string, std::string> g_users;
+locker g_users_lock;
+
+//查询用户口令，找到时写入 passwd 并返回 true
+bool lookup_user(const std::string &name, std::string &passwd)
+{
+    g_users_lock.lock();
+    auto it = g_users.find(name);
+    bool found = (it != g_users.end());
+    if (found)
+        passwd = it->second;
+    g_users_lock.unlock();
+    return found;
+}
+
+//注册用户：在锁内完成「查重 → 写库 → 更新内存」的完整序列，
+//使判重与插入之间不存在竞态窗口。返回 false 表示用户名已存在或写库失败
+bool register_user(const std::string &name, const std::string &passwd, MYSQL *conn, const char *sql_insert)
+{
+    g_users_lock.lock();
+    if (g_users.find(name) != g_users.end())
+    {
+        g_users_lock.unlock();
+        return false;
+    }
+    int res = mysql_query(conn, sql_insert);
+    if (res == 0)
+        g_users[name] = passwd;
+    g_users_lock.unlock();
+    return res == 0;
+}
+} // namespace
 
 void http_conn::initmysql_result(connection_pool *connPool)
 {
@@ -61,18 +95,29 @@ void http_conn::initmysql_result(connection_pool *connPool)
     if (mysql_query(mysql, "SELECT username,passwd FROM user"))
     {
         LOG_ERROR("SELECT error:%s\n", mysql_error(mysql));
+        return;
     }
 
     //从表中检索完整的结果集
     MYSQL_RES *result = mysql_store_result(mysql);
+    if (result == nullptr)
+    {
+        LOG_ERROR("mysql_store_result error:%s\n", mysql_error(mysql));
+        return;
+    }
 
     //从结果集中获取下一行，将对应的用户名和密码，存入map中
+    g_users_lock.lock();
     while (MYSQL_ROW row = mysql_fetch_row(result))
     {
         std::string temp1(row[0]);
         std::string temp2(row[1]);
-        users[temp1] = temp2;
+        g_users[temp1] = temp2;
     }
+    g_users_lock.unlock();
+
+    //结果集由调用方负责释放，否则每次加载用户表都会泄漏一份
+    mysql_free_result(result);
 }
 
 //对文件描述符设置非阻塞
@@ -144,17 +189,19 @@ void http_conn::init(int sockfd, const sockaddr_in &addr, char *root, int TRIGMo
     m_sockfd = sockfd;
     m_address = addr;
 
-    addfd(m_epollfd, sockfd, true, m_TRIGMode);
-    m_user_count++;
-
     //当浏览器出现连接重置时，可能是网站根目录出错或http响应格式出错或者访问的文件中内容完全为空
     doc_root = root;
+    //成员必须先于 addfd 赋值：addfd 要读取 m_TRIGMode 决定 connfd 的触发模式，
+    //若在赋值前调用，注册时读到的是未初始化的值，-m 参数中的连接侧组合因而从未生效
     m_TRIGMode = TRIGMode;
     m_close_log = close_log;
 
-    strcpy(sql_user, user.c_str());
-    strcpy(sql_passwd, passwd.c_str());
-    strcpy(sql_name, sqlname.c_str());
+    snprintf(sql_user, sizeof(sql_user), "%s", user.c_str());
+    snprintf(sql_passwd, sizeof(sql_passwd), "%s", passwd.c_str());
+    snprintf(sql_name, sizeof(sql_name), "%s", sqlname.c_str());
+
+    addfd(m_epollfd, sockfd, true, m_TRIGMode);
+    m_user_count++;
 
     init();
 }
@@ -182,12 +229,14 @@ void http_conn::init()
     timer_flag = 0;
     improv = 0;
 
+    //指向请求体与文件映射的指针必须显式复位：连接对象会被复用，
+    //残留的上次取值会让 unmap 与判空逻辑作用于已失效的地址
+    m_string = nullptr;
+    m_file_address = nullptr;
+    m_iv_count = 0;
+
     // 新增：重置文件上传状态
     init_file_upload_state();
-    // m_is_file_upload = false;
-    // m_boundary.clear();
-    // m_file_name.clear();
-    // m_file_content.clear();
 
     memset(m_read_buf, '\0', READ_BUFFER_SIZE);
     memset(m_write_buf, '\0', WRITE_BUFFER_SIZE);
@@ -242,13 +291,20 @@ bool http_conn::read_once()
     if (0 == m_TRIGMode)
     {
         bytes_read = recv(m_sockfd, m_read_buf + m_read_idx, READ_BUFFER_SIZE - m_read_idx, 0);
-        m_read_idx += bytes_read;
 
-        if (bytes_read <= 0)
+        //先判返回值再累加读索引：负数直接累加会破坏索引，后续解析将读到错误位置
+        if (bytes_read < 0)
         {
-            return false;
+            //非阻塞下 EAGAIN 表示此刻无数据可读，连接仍然有效；
+            //其余负值才是真正的读取出错
+            return (errno == EAGAIN || errno == EWOULDBLOCK);
+        }
+        if (bytes_read == 0)
+        {
+            return false; //对端已关闭
         }
 
+        m_read_idx += bytes_read;
         return true;
     }
     //ET读数据
@@ -476,6 +532,10 @@ http_conn::HTTP_CODE http_conn::do_request()
     //处理cgi
     if (cgi == 1 && (*(p + 1) == '2' || *(p + 1) == '3'))
     {
+        //POST 但未携带请求体时 m_string 为空，此处的解析无从进行
+        if (m_string == nullptr)
+            return BAD_REQUEST;
+
         //将请求路径映射为根目录下的实际文件路径
         snprintf(m_real_file + len, FILENAME_LEN - len, "/%s", m_url + 2);
 
@@ -504,26 +564,19 @@ http_conn::HTTP_CODE http_conn::do_request()
             strcat(sql_insert, password);
             strcat(sql_insert, "')");
 
-            if (users.find(name) == users.end())
-            {
-                m_lock.lock();
-                int res = mysql_query(mysql, sql_insert);
-                users.insert(std::pair<std::string, std::string>(name, password));
-                m_lock.unlock();
-
-                if (!res)
-                    strcpy(m_url, "/log.html");
-                else
-                    strcpy(m_url, "/registerError.html");
-            }
+            if (register_user(name, password, mysql, sql_insert))
+                strcpy(m_url, "/log.html");
             else
                 strcpy(m_url, "/registerError.html");
+
+            free(sql_insert);
         }
         //如果是登录，直接判断
         //若浏览器端输入的用户名和密码在表中可以查找到，返回1，否则返回0
         else if (*(p + 1) == '2')
         {
-            if (users.find(name) != users.end() && users[name] == password)
+            std::string stored_passwd;
+            if (lookup_user(name, stored_passwd) && stored_passwd == password)
                 strcpy(m_url, "/welcome.html");
             else
                 strcpy(m_url, "/logError.html");

@@ -10,6 +10,10 @@ Log::Log()
 {
     m_count = 0;
     m_is_async = false;
+    //这些指针在 init 之前也可能被析构函数访问，先置空避免读到未初始化的取值
+    m_fp = nullptr;
+    m_buf = nullptr;
+    m_log_queue = nullptr;
 }
 
 Log::~Log()
@@ -18,6 +22,8 @@ Log::~Log()
     {
         fclose(m_fp);
     }
+    delete[] m_buf;
+    delete m_log_queue;
 }
 //异步需要设置阻塞队列的长度，同步不需要设置
 bool Log::init(const char *file_name, int close_log, int log_buf_size, int split_lines, int max_queue_size)
@@ -26,6 +32,7 @@ bool Log::init(const char *file_name, int close_log, int log_buf_size, int split
     if (max_queue_size >= 1)
     {
         m_is_async = true;
+        delete m_log_queue;
         m_log_queue = new block_queue<string>(max_queue_size);
         pthread_t tid;
         //flush_log_thread为回调函数,这里表示创建线程异步写日志
@@ -34,6 +41,8 @@ bool Log::init(const char *file_name, int close_log, int log_buf_size, int split
 
     m_close_log = close_log;
     m_log_buf_size = log_buf_size;
+    //init 可能被多次调用，先释放上一个缓冲区，否则每次调用都会泄漏一份
+    delete[] m_buf;
     m_buf = new char[m_log_buf_size];
     memset(m_buf, '\0', m_log_buf_size);
     m_split_lines = split_lines;
@@ -137,8 +146,20 @@ void Log::write_log(int level, const char *format, ...)
     //写入的具体时间内容格式
     int n = snprintf(m_buf, 48, "%d-%02d-%02d %02d:%02d:%02d.%06ld %s ", my_tm.tm_year + 1900, my_tm.tm_mon + 1,
                      my_tm.tm_mday, my_tm.tm_hour, my_tm.tm_min, my_tm.tm_sec, now.tv_usec, s);
+    if (n < 0)
+        n = 0;
+    //前缀至多占满缓冲区末尾的换行位与终止符，保证后面仍留有可用空间
+    if (n > m_log_buf_size - 2)
+        n = m_log_buf_size - 2;
 
     int m = vsnprintf(m_buf + n, m_log_buf_size - n - 1, format, valst);
+    if (m < 0)
+        m = 0;
+    //vsnprintf 在截断时返回「本该写入的长度」而非实际写入长度，
+    //若直接按其累加，随后的换行与终止符会写到缓冲区之外
+    if (m > m_log_buf_size - n - 2)
+        m = m_log_buf_size - n - 2;
+
     m_buf[n + m] = '\n';
     m_buf[n + m + 1] = '\0';
     log_str = m_buf;
