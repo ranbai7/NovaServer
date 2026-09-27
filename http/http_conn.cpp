@@ -32,6 +32,8 @@ const char *error_501_title = "Not Implemented";
 const char *error_501_form = "This server does not implement the requested method.\n";
 const char *error_415_title = "Unsupported Media Type";
 const char *error_415_form = "The uploaded file type is not accepted by this server.\n";
+const char *error_417_title = "Expectation Failed";
+const char *error_417_form = "The expectation given in the Expect header cannot be met.\n";
 
 //服务端实现之外但属于 HTTP 规范的请求方法。它们与无法识别的记号需要区分开：
 //前者应当回 501，后者是语法错误
@@ -519,7 +521,9 @@ void http_conn::init()
     bytes_to_send = 0;
     bytes_have_send = 0;
     m_check_state = CHECK_STATE_REQUESTLINE;
-    m_linger = false;
+    //本服务端只接受 HTTP/1.1，而该版本默认保持连接：只有请求显式给出
+    //Connection: close 时才会置假（见 parse_headers）
+    m_linger = true;
     m_method = GET;
     m_url = 0;
     m_version = 0;
@@ -546,6 +550,7 @@ void http_conn::init()
 
     m_oversized = false;
     m_has_content_length = false;
+    m_expect_continue = false;
     m_header_end = 0;
     //连接复用时不保留上次为超大请求扩容出来的缓冲，避免大请求之后内存被长期占用
     if (m_read_buf.capacity() > static_cast<size_t>(READ_BUFFER_SIZE) * 4)
@@ -782,6 +787,13 @@ http_conn::HTTP_CODE http_conn::parse_headers(char *text)
             //向后移动，不能用它推算请求体位置
             m_body_start = m_checked_idx;
             m_check_state = CHECK_STATE_CONTENT;
+
+            //客户端在等 100 Continue 才肯发送请求体，因此必须在等待之前回应。
+            //放到这里而不是解析到 Expect 头时就发：Content-Length 也已校验完毕
+            //（超限的请求在解析那个头时即已返回 413），此时才是「确定要收这个体」
+            if (m_expect_continue)
+                send_continue();
+
             return NO_REQUEST;
         }
         return GET_REQUEST;
@@ -790,9 +802,12 @@ http_conn::HTTP_CODE http_conn::parse_headers(char *text)
     {
         text += 11;
         text += strspn(text, " \t");
-        if (strcasecmp(text, "keep-alive") == 0)
+        //本服务端只接受 HTTP/1.1，而该版本默认保持连接：m_linger 的基准值已是真，
+        //这里只需处理显式关闭。此前只在收到 keep-alive 时才置真，
+        //于是不带该头的客户端（curl、wrk 等多数实现）每个请求都要重连
+        if (strcasecmp(text, "close") == 0)
         {
-            m_linger = true;
+            m_linger = false;
         }
     }
     else if (strncasecmp(text, "Content-length:", 15) == 0)
@@ -840,11 +855,43 @@ http_conn::HTTP_CODE http_conn::parse_headers(char *text)
         }
     }
 
+    else if (strncasecmp(text, "Expect:", 7) == 0)
+    {
+        text += 7;
+        text += strspn(text, " \t");
+
+        //HTTP/1.1 中唯一定义的期望是 100-continue：客户端在发送大体积请求体前
+        //先征求许可。不理会它并不会出错，但客户端要一直等到自身的期望超时
+        //才会把请求体发出来，这段时间是纯损耗
+        if (strcasecmp(text, "100-continue") == 0)
+        {
+            m_expect_continue = true;
+        }
+        else
+        {
+            //其余期望值本服务端无法满足，按规范回 417
+            return EXPECTATION_FAILED;
+        }
+    }
+
     else
     {
         LOG_INFO("oop!unknow header: %s", text);
     }
     return NO_REQUEST;
+}
+
+//回应 100 Continue。这一行不参与写缓冲的组装：写缓冲承载的是最终响应，
+//而 100 是请求处理中途的中间响应，写完即被后续的最终响应覆盖
+void http_conn::send_continue()
+{
+    static const char kContinueResponse[] = "HTTP/1.1 100 Continue\r\n\r\n";
+    const ssize_t written = send(m_sockfd, kContinueResponse, sizeof(kContinueResponse) - 1, 0);
+
+    //非阻塞套接字上 25 字节写不下意味着发送缓冲已满，此时客户端通常也尚未开始
+    //发送请求体，数据会随后续写入排空。这种情况不值得中断整个请求
+    if (written < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
+        LOG_WARN("send 100 continue failed, errno:%d", errno);
 }
 
 //判断http请求是否被完整读入
@@ -946,6 +993,11 @@ http_conn::HTTP_CODE http_conn::do_request()
     {
         HTTP_CODE ret = parse_multipart_content();
         if (ret != GET_REQUEST)
+            return BAD_REQUEST;
+
+        //点号开头的文件在列表页会被跳过，若在此放行就会出现「上传成功却看不见」。
+        //两侧统一为拒绝，列表页的跳过逻辑保持不变
+        if (!m_file_name.empty() && m_file_name[0] == '.')
             return BAD_REQUEST;
 
         //扩展名白名单与体积上限在落盘之前校验
@@ -1345,6 +1397,18 @@ bool http_conn::process_write(HTTP_CODE ret)
             return false;
         break;
     }
+    case EXPECTATION_FAILED:
+    {
+        //客户端可能没等 100 Continue 就把请求体发了过来，那些字节无从处理，
+        //因此与 413 同样在回应后关闭连接
+        m_linger = false;
+        add_status_line(417, error_417_title);
+        add_content_type(kErrorContentType);
+        add_headers(strlen(error_417_form));
+        if (!add_content(error_417_form))
+            return false;
+        break;
+    }
     case DYNAMIC_CONTENT:
     {
         //正文由请求处理阶段生成（目前用于上传列表页）
@@ -1614,25 +1678,28 @@ http_conn::HTTP_CODE http_conn::serve_uploaded_file(const char *name)
 //生成已上传文件的列表页，链接指向各文件的下载地址
 http_conn::HTTP_CODE http_conn::build_upload_list()
 {
-    DIR *dir = opendir(kUploadDir);
-    if (dir == nullptr)
-        return INTERNAL_ERROR;
-
+    //目录不存在或不可读时按「没有文件」处理，而不是服务端错误：
+    //列表页的职责是展示已有内容，此时它与「目录存在但没有内容」是同一个结果。
+    //此前这里返回 500，而上传目录是运行期才按需创建的（见 save_uploaded_file），
+    //服务刚启动时它确实可能还不存在
     std::vector<std::pair<std::string, long>> files;
-    while (struct dirent *entry = readdir(dir))
+    if (DIR *dir = opendir(kUploadDir))
     {
-        const std::string name(entry->d_name);
-        if (name.empty() || name[0] == '.')
-            continue;
+        while (struct dirent *entry = readdir(dir))
+        {
+            const std::string name(entry->d_name);
+            if (name.empty() || name[0] == '.')
+                continue;
 
-        const std::string path = std::string(kUploadDir) + "/" + name;
-        struct stat info;
-        if (stat(path.c_str(), &info) != 0 || !S_ISREG(info.st_mode))
-            continue;
+            const std::string path = std::string(kUploadDir) + "/" + name;
+            struct stat info;
+            if (stat(path.c_str(), &info) != 0 || !S_ISREG(info.st_mode))
+                continue;
 
-        files.emplace_back(name, static_cast<long>(info.st_size));
+            files.emplace_back(name, static_cast<long>(info.st_size));
+        }
+        closedir(dir);
     }
-    closedir(dir);
 
     std::sort(files.begin(), files.end());
 

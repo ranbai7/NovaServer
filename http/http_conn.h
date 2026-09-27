@@ -75,6 +75,7 @@ public:
         REQUEST_HEADER_TOO_LARGE,
         METHOD_NOT_IMPLEMENTED,
         UNSUPPORTED_MEDIA_TYPE,
+        EXPECTATION_FAILED,
         DYNAMIC_CONTENT,
         CLOSED_CONNECTION
     };
@@ -108,6 +109,8 @@ private:
     HTTP_CODE parse_request_line(char *text);
     HTTP_CODE parse_headers(char *text);
     HTTP_CODE parse_content(char *text);
+    //回应 100 Continue，告知客户端可以开始发送请求体
+    void send_continue();
     HTTP_CODE do_request();
     //把「根目录 + 相对路径」写入 m_real_file。总长超出容量时返回 false，
     //调用方应判为错误请求：被截断的路径会指向并非请求目标的文件
@@ -155,6 +158,7 @@ private:
     int m_header_end;          //响应头结束（即正文起始）在写缓冲区中的位置
     bool m_oversized;          //请求体已超过 MAX_REQUEST_SIZE
     bool m_has_content_length; //是否已出现过 Content-Length 头
+    bool m_expect_continue;    //请求带 Expect: 100-continue，需在收请求体前回应 100
     CHECK_STATE m_check_state;
     METHOD m_method;
     char m_real_file[FILENAME_LEN];
