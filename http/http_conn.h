@@ -27,7 +27,6 @@
 #include "../CGImysql/sql_connection_pool.h"
 #include "../lock/locker.h"
 #include "../log/log.h"
-#include "../timer/lst_timer.h"
 
 class http_conn
 {
