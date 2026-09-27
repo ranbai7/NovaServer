@@ -1,4 +1,5 @@
 #include "http_conn.h"
+#include "url_codec.h"
 
 #include <fstream>
 #include <mysql/mysql.h>
@@ -67,45 +68,13 @@ bool lookup_user(const std::string &name, std::string &passwd)
     return found;
 }
 
-//十六进制字符取值，非十六进制字符返回 -1
-int hex_value(char c)
+//用变换后的路径覆盖读缓冲区中的原文，返回原指针以便链式书写。
+//解码与规范化都只会缩短路径，因此就地写回不会超出原占用的空间
+char *overwrite_url(char *url, const std::string &replacement)
 {
-    if (c >= '0' && c <= '9')
-        return c - '0';
-    if (c >= 'a' && c <= 'f')
-        return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F')
-        return c - 'A' + 10;
-    return -1;
-}
-
-//解码 %XX 转义。plus_as_space 为真时把 '+' 一并还原为空格——
-//这是表单请求体与查询串的约定，而路径中的 '+' 是字面量，不参与还原
-std::string url_decode(const std::string &in, bool plus_as_space)
-{
-    std::string out;
-    out.reserve(in.size());
-    for (size_t i = 0; i < in.size(); ++i)
-    {
-        if (in[i] == '%' && i + 2 < in.size())
-        {
-            int hi = hex_value(in[i + 1]);
-            int lo = hex_value(in[i + 2]);
-            if (hi >= 0 && lo >= 0)
-            {
-                out.push_back(static_cast<char>((hi << 4) | lo));
-                i += 2;
-                continue;
-            }
-        }
-        else if (in[i] == '+' && plus_as_space)
-        {
-            out.push_back(' ');
-            continue;
-        }
-        out.push_back(in[i]);
-    }
-    return out;
+    memcpy(url, replacement.data(), replacement.size());
+    url[replacement.size()] = '\0';
+    return url;
 }
 
 //解析 application/x-www-form-urlencoded 请求体：字段以 '&' 分隔，
@@ -129,9 +98,9 @@ std::map<std::string, std::string> parse_form_body(const char *body, long length
         const size_t eq = field.find('=');
         if (eq != std::string::npos)
         {
-            const std::string key = url_decode(field.substr(0, eq), true);
+            const std::string key = url_codec::decode(field.substr(0, eq), true);
             if (!key.empty())
-                params[key] = url_decode(field.substr(eq + 1), true);
+                params[key] = url_codec::decode(field.substr(eq + 1), true);
         }
 
         if (amp == data.size())
@@ -479,6 +448,21 @@ http_conn::HTTP_CODE http_conn::parse_request_line(char *text)
 
     if (!m_url || m_url[0] != '/')
         return BAD_REQUEST;
+
+    //解码与规范化的顺序不可颠倒：%2e%2e%2f 解码后才是 '..' 段，
+    //若先规范化后解码，编码形式就能绕过规范化里的全部判断
+    const std::string decoded = url_codec::decode(m_url, false);
+    //%00 解码后是字符串结束符。路径随后要按 C 字符串参与拼接与判等，
+    //含结束符的内容会在那里被截断，使实际处理的路径短于这里的判断对象
+    if (decoded.find('\0') != std::string::npos)
+        return BAD_REQUEST;
+    m_url = overwrite_url(m_url, decoded);
+
+    const std::string normalized = url_codec::normalize_path(m_url);
+    if (normalized.empty())
+        return BAD_REQUEST; //路径试图越过根目录
+    m_url = overwrite_url(m_url, normalized);
+
     //当url为/时，显示判断界面
     if (strlen(m_url) == 1)
         strcat(m_url, "judge.html");

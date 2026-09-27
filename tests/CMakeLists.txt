@@ -37,3 +37,8 @@ add_unit_test(log_tests
     test_log.cpp
     ${CMAKE_SOURCE_DIR}/log/log.cpp
 )
+
+# URL 编解码与路径规范化为纯函数，无需链接额外源文件
+add_unit_test(url_codec_tests
+    test_url_codec.cpp
+)
