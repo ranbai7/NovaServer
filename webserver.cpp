@@ -226,8 +226,7 @@ void WebServer::eventListen()
 
 void WebServer::timer(int connfd, struct sockaddr_in client_address)
 {
-    users[connfd].init(connfd, client_address, m_root, m_CONNTrigmode, m_close_log, m_db_user, m_db_password,
-                       m_db_name);
+    users[connfd].init(connfd, client_address, m_root, m_CONNTrigmode, m_close_log);
 
     //初始化client_data数据
     //创建定时器，设置回调函数和超时时间，绑定用户数据，将定时器添加到链表中

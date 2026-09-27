@@ -91,8 +91,7 @@ public:
     ~http_conn() {}
 
 public:
-    void init(int sockfd, const sockaddr_in &addr, char *, int, int, const std::string &user, const std::string &passwd,
-              const std::string &sqlname);
+    void init(int sockfd, const sockaddr_in &addr, char *root, int TRIGMode, int close_log);
     void close_conn(bool real_close = true);
     void process();
     bool read_once();
@@ -134,6 +133,7 @@ private:
 
     // 新增：文件上传相关方法
     HTTP_CODE parse_multipart_content();             // 解析 multipart 请求体
+    HTTP_CODE check_upload_name_early();             // 请求体未收完时的上传名提前判定
     bool save_uploaded_file();                       // 保存文件到磁盘
     HTTP_CODE serve_uploaded_file(const char *name); // 返回已上传的文件
     HTTP_CODE build_upload_list();                   // 生成已上传文件的列表页
@@ -177,13 +177,8 @@ private:
     int bytes_have_send;
     char *doc_root;
 
-    std::map<std::string, std::string> m_users;
     int m_TRIGMode;
     int m_close_log;
-
-    char sql_user[100];
-    char sql_passwd[100];
-    char sql_name[100];
 
     // ========== 文件上传新增成员变量 ==========
     bool m_is_file_upload;      // 是否为文件上传请求

@@ -10,6 +10,7 @@
 #include <dirent.h>
 #include <fstream>
 #include <mysql/mysql.h>
+#include <string_view>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <vector>
@@ -93,6 +94,68 @@ bool is_allowed_upload_name(const std::string &name)
             return true;
     }
     return false;
+}
+
+//上传文件名的准入判定：非空、不以点开头（列表页会跳过这类名字）、扩展名在白名单内。
+//落盘前的校验与请求体接收途中的提前判定共用它，保证两处的结论一致
+http_conn::HTTP_CODE check_upload_name(const std::string &name)
+{
+    if (name.empty() || name[0] == '.')
+        return http_conn::BAD_REQUEST;
+    if (!is_allowed_upload_name(name))
+        return http_conn::UNSUPPORTED_MEDIA_TYPE;
+    return http_conn::GET_REQUEST; //准入
+}
+
+//multipart 请求体中第一个 part 的头部信息。
+//ok 为假表示给定的这一段字节还不足以判定结构——请求体边收边判时，
+//「还没到齐」必须与「结构确实非法」区分开
+struct MultipartPart
+{
+    bool ok = false;
+    size_t content_start = 0; //文件内容起点（part 头部结束标记之后）
+    std::string filename;
+};
+
+MultipartPart locate_first_part(std::string_view body, const std::string &boundary)
+{
+    MultipartPart part;
+    if (boundary.empty())
+        return part;
+
+    size_t start = body.find(boundary);
+    if (start == std::string_view::npos)
+        return part;
+    start += boundary.size();
+
+    if (start + 2 > body.size() || body.substr(start, 2) != "\r\n")
+        return part;
+    start += 2;
+
+    const size_t header_end = body.find("\r\n\r\n", start);
+    if (header_end == std::string_view::npos)
+        return part;
+
+    const std::string_view header = body.substr(start, header_end - start);
+    const size_t filename_pos = header.find("filename=\"");
+    if (filename_pos == std::string_view::npos)
+        return part;
+
+    const size_t name_start = filename_pos + 10; //跳过 "filename=\""
+    const size_t name_end = header.find('"', name_start);
+    if (name_end == std::string_view::npos)
+        return part;
+
+    std::string name(header.substr(name_start, name_end - name_start));
+    //只保留文件名，丢弃客户端可能带上的路径
+    const size_t slash = name.find_last_of("/\\");
+    if (slash != std::string::npos)
+        name = name.substr(slash + 1);
+
+    part.ok = true;
+    part.content_start = header_end + 4; //跳过 "\r\n\r\n"
+    part.filename = std::move(name);
+    return part;
 }
 
 //响应头中的取值不能带控制字符与引号，否则可注入额外头部或截断取值
@@ -490,8 +553,7 @@ void http_conn::close_conn(bool real_close)
 }
 
 //初始化连接,外部调用初始化套接字地址
-void http_conn::init(int sockfd, const sockaddr_in &addr, char *root, int TRIGMode, int close_log,
-                     const std::string &user, const std::string &passwd, const std::string &sqlname)
+void http_conn::init(int sockfd, const sockaddr_in &addr, char *root, int TRIGMode, int close_log)
 {
     m_sockfd = sockfd;
     m_address = addr;
@@ -502,10 +564,6 @@ void http_conn::init(int sockfd, const sockaddr_in &addr, char *root, int TRIGMo
     //若在赋值前调用，注册时读到的是未初始化的值，-m 参数中的连接侧组合因而从未生效
     m_TRIGMode = TRIGMode;
     m_close_log = close_log;
-
-    snprintf(sql_user, sizeof(sql_user), "%s", user.c_str());
-    snprintf(sql_passwd, sizeof(sql_passwd), "%s", passwd.c_str());
-    snprintf(sql_name, sizeof(sql_name), "%s", sqlname.c_str());
 
     addfd(m_epollfd, sockfd, true, m_TRIGMode);
     m_user_count++;
@@ -876,7 +934,7 @@ http_conn::HTTP_CODE http_conn::parse_headers(char *text)
 
     else
     {
-        LOG_INFO("oop!unknow header: %s", text);
+        LOG_INFO("oop!unknown header: %s", text);
     }
     return NO_REQUEST;
 }
@@ -897,6 +955,16 @@ void http_conn::send_continue()
 //判断http请求是否被完整读入
 http_conn::HTTP_CODE http_conn::parse_content([[maybe_unused]] char *text)
 {
+    //请求体尚未收全时，只要 multipart 的 part 头部已经到达，文件名就已可判定。
+    //不合格就立刻拒绝：否则要等客户端把整个请求体（上限 8 MiB）传完才回 415，
+    //这段时间与带宽都是白费的
+    if (m_is_file_upload)
+    {
+        const HTTP_CODE verdict = check_upload_name_early();
+        if (verdict != NO_REQUEST)
+            return verdict;
+    }
+
     //以 m_body_start 而非 m_checked_idx 为基准：后者会被 parse_line 推到读索引处
     if (m_read_idx >= (m_content_length + m_body_start))
     {
@@ -907,6 +975,26 @@ http_conn::HTTP_CODE http_conn::parse_content([[maybe_unused]] char *text)
         return GET_REQUEST;
     }
     return NO_REQUEST;
+}
+
+//请求体边收边判：part 头部一旦完整到达就检查文件名。
+//返回 NO_REQUEST 表示「可以继续」（合格，或头部尚未到齐）
+http_conn::HTTP_CODE http_conn::check_upload_name_early()
+{
+    const size_t available = static_cast<size_t>(m_read_idx - m_body_start);
+    const std::string_view body(m_read_buf.data() + m_body_start, available);
+
+    const MultipartPart part = locate_first_part(body, m_boundary);
+    if (!part.ok)
+        return NO_REQUEST; //头部还没到齐，等下一次读取
+
+    const HTTP_CODE verdict = check_upload_name(part.filename);
+    if (verdict == GET_REQUEST)
+        return NO_REQUEST; //准入，继续接收请求体
+
+    //拒绝发生在请求体读完之前，连接上必然残留未处理的字节，不能复用
+    m_linger = false;
+    return verdict;
 }
 
 http_conn::HTTP_CODE http_conn::process_read()
@@ -969,6 +1057,10 @@ http_conn::HTTP_CODE http_conn::process_read()
             ret = parse_content(text);
             if (ret == GET_REQUEST)
                 return do_request();
+            //非 NO_REQUEST 即内容阶段的提前判定（上传文件名不合格），
+            //它是最终结果，不能像此前那样一律按「还没收完」丢弃
+            if (ret != NO_REQUEST)
+                return ret;
             //请求体尚未收完，等待后续数据
             return NO_REQUEST;
         }
@@ -995,14 +1087,14 @@ http_conn::HTTP_CODE http_conn::do_request()
         if (ret != GET_REQUEST)
             return BAD_REQUEST;
 
-        //点号开头的文件在列表页会被跳过，若在此放行就会出现「上传成功却看不见」。
-        //两侧统一为拒绝，列表页的跳过逻辑保持不变
-        if (!m_file_name.empty() && m_file_name[0] == '.')
-            return BAD_REQUEST;
+        //文件名准入。与请求体接收途中的提前判定共用同一函数，两侧结论一致；
+        //这里仍要再判一次——提前判定只在 part 头部到达时才触发得到
+        const HTTP_CODE name_verdict = check_upload_name(m_file_name);
+        if (name_verdict != GET_REQUEST)
+            return name_verdict;
 
-        //扩展名白名单与体积上限在落盘之前校验
-        if (!is_allowed_upload_name(m_file_name))
-            return UNSUPPORTED_MEDIA_TYPE;
+        //体积上限在落盘之前校验。它无法提前判定：Content-Length 是请求体的长度，
+        //其中还包含边界与 part 头部，请求体未超限并不说明文件未超限
         if (static_cast<long>(m_file_content.size()) > MAX_UPLOAD_SIZE)
             return REQUEST_TOO_LARGE;
 
@@ -1183,17 +1275,6 @@ bool http_conn::write()
 
         bytes_have_send += temp;
         bytes_to_send -= temp;
-        if (static_cast<size_t>(bytes_have_send) >= m_iv[0].iov_len)
-        {
-            m_iv[0].iov_len = 0;
-            m_iv[1].iov_base = m_file_address + (bytes_have_send - m_write_idx);
-            m_iv[1].iov_len = bytes_to_send;
-        }
-        else
-        {
-            m_iv[0].iov_base = m_write_buf.data() + bytes_have_send;
-            m_iv[0].iov_len = m_iv[0].iov_len - bytes_have_send;
-        }
 
         if (bytes_to_send <= 0)
         {
@@ -1209,6 +1290,23 @@ bool http_conn::write()
             {
                 return false;
             }
+        }
+
+        //尚未发完，推进还没写完的那一段。把「已发完」的判断提到前面，
+        //下面的指针运算就都建立在「确有剩余字节」之上——此前它在后面，
+        //HEAD 响应（iov_count 为 1、m_iv[1] 从未被设置）也要走一遍推进，
+        //算出的偏移为负且基址为空，构成指针运算越界
+        if (2 == m_iv_count && static_cast<size_t>(bytes_have_send) >= m_iv[0].iov_len)
+        {
+            //响应头已发完，改为续发文件映射区
+            m_iv[0].iov_len = 0;
+            m_iv[1].iov_base = m_file_address + (bytes_have_send - m_write_idx);
+            m_iv[1].iov_len = bytes_to_send;
+        }
+        else
+        {
+            m_iv[0].iov_base = m_write_buf.data() + bytes_have_send;
+            m_iv[0].iov_len -= bytes_have_send;
         }
     }
 }
@@ -1318,20 +1416,16 @@ bool http_conn::process_write(HTTP_CODE ret)
     {
     case INTERNAL_ERROR:
     {
-        add_status_line(500, error_500_title);
-        add_content_type(kErrorContentType);
-        add_headers(strlen(error_500_form));
-        if (!add_content(error_500_form))
+        if (!add_status_line(500, error_500_title) || !add_content_type(kErrorContentType) ||
+            !add_headers(strlen(error_500_form)) || !add_content(error_500_form))
             return false;
         break;
     }
     case BAD_REQUEST:
     {
         //请求本身不合法，返回 400；此前返回的是 404 与「文件未找到」文案
-        add_status_line(400, error_400_title);
-        add_content_type(kErrorContentType);
-        add_headers(strlen(error_400_form));
-        if (!add_content(error_400_form))
+        if (!add_status_line(400, error_400_title) || !add_content_type(kErrorContentType) ||
+            !add_headers(strlen(error_400_form)) || !add_content(error_400_form))
             return false;
         break;
     }
@@ -1339,10 +1433,8 @@ bool http_conn::process_write(HTTP_CODE ret)
     {
         //此前该状态没有对应分支，控制流落入 default 后连接被直接关闭，
         //客户端收不到任何响应
-        add_status_line(404, error_404_title);
-        add_content_type(kErrorContentType);
-        add_headers(strlen(error_404_form));
-        if (!add_content(error_404_form))
+        if (!add_status_line(404, error_404_title) || !add_content_type(kErrorContentType) ||
+            !add_headers(strlen(error_404_form)) || !add_content(error_404_form))
             return false;
         break;
     }
@@ -1351,49 +1443,39 @@ bool http_conn::process_write(HTTP_CODE ret)
         //请求体超限。余下的字节已无从处理，因此回应后关闭连接，
         //而不沿用请求里的 keep-alive 意愿
         m_linger = false;
-        add_status_line(413, error_413_title);
-        add_content_type(kErrorContentType);
-        add_headers(strlen(error_413_form));
-        if (!add_content(error_413_form))
+        if (!add_status_line(413, error_413_title) || !add_content_type(kErrorContentType) ||
+            !add_headers(strlen(error_413_form)) || !add_content(error_413_form))
             return false;
         break;
     }
     case REQUEST_HEADER_TOO_LARGE:
     {
         m_linger = false;
-        add_status_line(431, error_431_title);
-        add_content_type(kErrorContentType);
-        add_headers(strlen(error_431_form));
-        if (!add_content(error_431_form))
+        if (!add_status_line(431, error_431_title) || !add_content_type(kErrorContentType) ||
+            !add_headers(strlen(error_431_form)) || !add_content(error_431_form))
             return false;
         break;
     }
     case METHOD_NOT_IMPLEMENTED:
     {
         //方法未被实现。响应中给出 Allow 告知实际支持的方法
-        add_status_line(501, error_501_title);
-        add_response("Allow:%s\r\n", "GET, HEAD, POST");
-        add_content_type(kErrorContentType);
-        add_headers(strlen(error_501_form));
-        if (!add_content(error_501_form))
+        if (!add_status_line(501, error_501_title) || !add_response("Allow:%s\r\n", "GET, HEAD, POST") ||
+            !add_content_type(kErrorContentType) || !add_headers(strlen(error_501_form)) ||
+            !add_content(error_501_form))
             return false;
         break;
     }
     case FORBIDDEN_REQUEST:
     {
-        add_status_line(403, error_403_title);
-        add_content_type(kErrorContentType);
-        add_headers(strlen(error_403_form));
-        if (!add_content(error_403_form))
+        if (!add_status_line(403, error_403_title) || !add_content_type(kErrorContentType) ||
+            !add_headers(strlen(error_403_form)) || !add_content(error_403_form))
             return false;
         break;
     }
     case UNSUPPORTED_MEDIA_TYPE:
     {
-        add_status_line(415, error_415_title);
-        add_content_type(kErrorContentType);
-        add_headers(strlen(error_415_form));
-        if (!add_content(error_415_form))
+        if (!add_status_line(415, error_415_title) || !add_content_type(kErrorContentType) ||
+            !add_headers(strlen(error_415_form)) || !add_content(error_415_form))
             return false;
         break;
     }
@@ -1402,30 +1484,23 @@ bool http_conn::process_write(HTTP_CODE ret)
         //客户端可能没等 100 Continue 就把请求体发了过来，那些字节无从处理，
         //因此与 413 同样在回应后关闭连接
         m_linger = false;
-        add_status_line(417, error_417_title);
-        add_content_type(kErrorContentType);
-        add_headers(strlen(error_417_form));
-        if (!add_content(error_417_form))
+        if (!add_status_line(417, error_417_title) || !add_content_type(kErrorContentType) ||
+            !add_headers(strlen(error_417_form)) || !add_content(error_417_form))
             return false;
         break;
     }
     case DYNAMIC_CONTENT:
     {
         //正文由请求处理阶段生成（目前用于上传列表页）
-        add_status_line(200, ok_200_title);
-        add_content_type(m_inline_content_type.c_str());
-        add_headers(static_cast<int>(m_inline_body.size()));
-        if (!add_content(m_inline_body.c_str()))
+        if (!add_status_line(200, ok_200_title) || !add_content_type(m_inline_content_type.c_str()) ||
+            !add_headers(static_cast<int>(m_inline_body.size())) || !add_content(m_inline_body.c_str()))
             return false;
         break;
     }
     case FILE_REQUEST:
     {
-        add_status_line(200, ok_200_title);
-
-        // ========== 新增：设置正确的 Content-Type ==========
-        add_content_type(get_mime_type(m_real_file));
-        // =================================================
+        if (!add_status_line(200, ok_200_title) || !add_content_type(get_mime_type(m_real_file)))
+            return false;
 
         if (m_is_upload_download)
         {
@@ -1434,12 +1509,15 @@ bool http_conn::process_write(HTTP_CODE ret)
             const std::string path(m_real_file);
             const size_t slash = path.find_last_of('/');
             const std::string name = (slash == std::string::npos) ? path : path.substr(slash + 1);
-            add_response("Content-Disposition: attachment; filename=\"%s\"\r\n", sanitize_header_value(name).c_str());
+            if (!add_response("Content-Disposition: attachment; filename=\"%s\"\r\n",
+                              sanitize_header_value(name).c_str()))
+                return false;
         }
 
         if (m_file_stat.st_size != 0)
         {
-            add_headers(m_file_stat.st_size);
+            if (!add_headers(m_file_stat.st_size))
+                return false;
             m_iv[0].iov_base = m_write_buf.data();
             m_iv[0].iov_len = m_write_idx;
             m_iv[1].iov_base = m_file_address;
@@ -1462,51 +1540,11 @@ bool http_conn::process_write(HTTP_CODE ret)
         else
         {
             const char *ok_string = "<html><body></body></html>";
-            add_headers(strlen(ok_string));
-            if (!add_content(ok_string))
+            if (!add_headers(strlen(ok_string)) || !add_content(ok_string))
                 return false;
         }
         break;
     }
-
-        //新增：
-        // case UPLOAD_SUCCESS:
-        // {
-        //     // 构造风格一致的上传成功 HTML 页面
-        //     std::string html_body;
-        //     html_body = "<!DOCTYPE html>\r\n";
-        //     html_body += "<html><head><meta charset=\"UTF-8\">";
-        //     html_body += "<title>Upload Success</title></head>\r\n";
-        //     html_body += "<body>\r\n<br/>\r\n<br/>\r\n";
-        //     html_body += "<div align=\"center\"><font size=\"5\">";
-        //     html_body += "<strong>上传成功</strong></font></div>\r\n<br/>\r\n";
-        //     html_body += "<div align=\"center\"><font size=\"4\">";
-        //     html_body += "文件 <strong>" + m_file_name + "</strong> 已成功上传";
-        //     html_body += "</font></div>\r\n<br/>\r\n<br/>\r\n";
-        //     html_body += "<div align=\"center\">\r\n";
-        //     html_body += "<form action=\"8\" method=\"post\">\r\n";
-        //     html_body += "<button type=\"submit\">继续上传</button>\r\n";
-        //     html_body += "</form>\r\n</div>\r\n<br/>\r\n";
-        //     html_body += "<div align=\"center\">\r\n";
-        //     html_body += "<form action=\"5\" method=\"post\">\r\n";
-        //     html_body += "<button type=\"submit\">返回主页</button>\r\n";
-        //     html_body += "</form>\r\n</div>\r\n";
-        //     html_body += "</body>\r\n</html>\r\n";
-
-        //     add_status_line(200, ok_200_title);
-        //     add_response("Content-Type: text/html; charset=utf-8\r\n");
-        //     add_content_length(html_body.length());
-        //     add_linger();
-        //     add_blank_line();
-        //     if (!add_content(html_body.c_str()))
-        //         return false;
-
-        //     m_iv[0].iov_base = m_write_buf;
-        //     m_iv[0].iov_len = m_write_idx;
-        //     m_iv_count = 1;
-        //     bytes_to_send = m_write_idx;
-        //     return true;
-        // }
 
     default:
         return false;
@@ -1532,10 +1570,13 @@ void http_conn::process()
         modfd(m_epollfd, m_sockfd, EPOLLIN, m_TRIGMode);
         return;
     }
-    bool write_ret = process_write(read_ret);
-    if (!write_ret)
+    if (!process_write(read_ret))
     {
+        //响应没能构造出来（写缓冲达到上限等），只有关闭这一条路。
+        //不能再往下走：close_conn 已把 m_sockfd 置为 -1，
+        //对它调用 epoll_ctl 只会得到 EBADF
         close_conn();
+        return;
     }
     modfd(m_epollfd, m_sockfd, EPOLLOUT, m_TRIGMode);
 }
@@ -1558,55 +1599,29 @@ http_conn::HTTP_CODE http_conn::parse_multipart_content()
     if (m_content_length <= 0 || m_string == NULL)
         return BAD_REQUEST;
 
-    std::string body(m_string, m_content_length);
+    //在读缓冲上直接取视图，不整体拷贝一份请求体：请求体上限 8 MiB，
+    //多一次拷贝就意味着上传期间多 8 MiB 常驻，而这份副本只是用来查找
+    const std::string_view body(m_string, static_cast<size_t>(m_content_length));
 
-    // 1. 找到起始 boundary
-    size_t start = body.find(m_boundary);
-    if (start == std::string::npos)
-        return BAD_REQUEST;
-    start += m_boundary.length();
-
-    // 2. 跳过 \r\n
-    if (start + 2 <= body.length() && body.substr(start, 2) == "\r\n")
-        start += 2;
-    else
+    const MultipartPart part = locate_first_part(body, m_boundary);
+    if (!part.ok)
         return BAD_REQUEST;
 
-    // 3. 找到 part 头部结束位置（"\r\n\r\n"）
-    size_t header_end = body.find("\r\n\r\n", start);
-    if (header_end == std::string::npos)
+    m_file_name = part.filename;
+
+    //文件内容止于下一个 boundary
+    const size_t marker = body.find(m_boundary, part.content_start);
+    if (marker == std::string_view::npos)
         return BAD_REQUEST;
 
-    // 4. 提取文件名
-    std::string part_header = body.substr(start, header_end - start);
-    size_t filename_pos = part_header.find("filename=\"");
-    if (filename_pos == std::string::npos)
-        return BAD_REQUEST;
-
-    size_t name_start = filename_pos + 10; // 跳过 "filename=\""
-    size_t name_end = part_header.find("\"", name_start);
-    if (name_end == std::string::npos)
-        return BAD_REQUEST;
-
-    m_file_name = part_header.substr(name_start, name_end - name_start);
-
-    // 安全处理：只保留文件名，丢弃路径
-    size_t slash = m_file_name.find_last_of("/\\");
-    if (slash != std::string::npos)
-        m_file_name = m_file_name.substr(slash + 1);
-
-    // 5. 提取文件内容
-    size_t content_start = header_end + 4; // 跳过 "\r\n\r\n"
-    size_t content_end = body.find(m_boundary, content_start);
-    if (content_end == std::string::npos)
-        return BAD_REQUEST;
-
-    // 去掉末尾的 "\r\n"
+    //去掉内容末尾的 "\r\n"
+    size_t content_end = marker;
     if (content_end >= 2 && body.substr(content_end - 2, 2) == "\r\n")
         content_end -= 2;
 
     //空文件是合法输入：只要求存在内容分隔，不再要求内容非空
-    m_file_content = body.substr(content_start, content_end - content_start);
+    const std::string_view content = body.substr(part.content_start, content_end - part.content_start);
+    m_file_content.assign(content.data(), content.size());
     return GET_REQUEST;
 }
 
