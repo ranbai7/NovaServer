@@ -52,4 +52,15 @@ add_unit_test(password_hash_tests
     test_password_hash.cpp
     ${CMAKE_SOURCE_DIR}/auth/password_hash.cpp
 )
+
+# 事件循环与通道：行为只在运行时成立，因此这两个模块的测试要真的跑起循环
+add_unit_test(event_loop_tests
+    test_event_loop.cpp
+    ${CMAKE_SOURCE_DIR}/net/event_loop.cpp
+    ${CMAKE_SOURCE_DIR}/net/channel.cpp
+)
+
+# 这批测试依赖跨线程唤醒，而唤醒一旦失效的表现是「循环永远等不到事件」——
+# 即测试挂住而不是断言失败。加超时把这种情况变成一次明确的失败
+set_tests_properties(event_loop_tests PROPERTIES TIMEOUT 30)
 target_link_libraries(password_hash_tests PRIVATE OpenSSL::Crypto)
