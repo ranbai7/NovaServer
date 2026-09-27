@@ -74,6 +74,8 @@ strcat(sql_insert, name);
 static const char kInsertSql[] = "INSERT INTO user(username, passwd) VALUES(?, ?)";
 ```
 
+（该常量在 `012` 重构口令哈希时已被移除，SQL 现以内联字面量的形式传给 `execute_two_params`。这里保留原样是为反映当时的实现。）
+
 用户名与口令作为绑定参数传入，不参与 SQL 文本构造，注入与缓冲区溢出两个问题一并消除。
 
 备选方案是 `mysql_real_escape_string` 转义后继续用 `mysql_query`。它的代码量更少，但转义正确性依赖字符集设置，且拼接本身仍然存在；本项目只需参数化一条语句，预处理语句的代价可以接受。
