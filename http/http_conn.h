@@ -38,7 +38,8 @@ public:
     static const int WRITE_BUFFER_SIZE = 1024;
     static const int MAX_REQUEST_SIZE = 8 * 1024 * 1024;
     static const int MAX_RESPONSE_SIZE = 64 * 1024;
-    static const int MAX_HEADER_SIZE = 8 * 1024; //请求头部（不含请求行与请求体）的长度上限
+    static const int MAX_HEADER_SIZE = 8 * 1024;        //请求头部（不含请求行与请求体）的长度上限
+    static const int MAX_UPLOAD_SIZE = 4 * 1024 * 1024; //单个上传文件的体积上限，须小于 MAX_REQUEST_SIZE
     enum METHOD
     {
         GET = 0,
@@ -69,6 +70,8 @@ public:
         REQUEST_TOO_LARGE,
         REQUEST_HEADER_TOO_LARGE,
         METHOD_NOT_IMPLEMENTED,
+        UNSUPPORTED_MEDIA_TYPE,
+        DYNAMIC_CONTENT,
         CLOSED_CONNECTION
     };
     enum LINE_STATUS
@@ -120,9 +123,11 @@ private:
     bool grow_write_buffer();
 
     // 新增：文件上传相关方法
-    HTTP_CODE parse_multipart_content(); // 解析 multipart 请求体
-    bool save_uploaded_file();           // 保存文件到磁盘
-    void init_file_upload_state();       // 重置上传状态
+    HTTP_CODE parse_multipart_content();             // 解析 multipart 请求体
+    bool save_uploaded_file();                       // 保存文件到磁盘
+    HTTP_CODE serve_uploaded_file(const char *name); // 返回已上传的文件
+    HTTP_CODE build_upload_list();                   // 生成已上传文件的列表页
+    void init_file_upload_state();                   // 重置上传状态
 
 public:
     static int m_epollfd;
@@ -171,9 +176,14 @@ private:
 
     // ========== 文件上传新增成员变量 ==========
     bool m_is_file_upload;      // 是否为文件上传请求
+    bool m_is_upload_download;  // 是否为已上传文件的下载响应
     std::string m_boundary;     // multipart boundary（含 "--" 前缀）
     std::string m_file_name;    // 上传的文件名
     std::string m_file_content; // 文件内容（仅小文件）
+
+    // 动态生成的响应正文（目前用于上传列表页）
+    std::string m_inline_body;
+    std::string m_inline_content_type;
 };
 
 #endif

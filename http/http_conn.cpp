@@ -2,10 +2,12 @@
 #include "../auth/password_hash.h"
 #include "url_codec.h"
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dirent.h>
 #include <fstream>
 #include <mysql/mysql.h>
 #include <sys/stat.h>
@@ -28,6 +30,8 @@ const char *error_500_title = "Internal Error";
 const char *error_500_form = "There was an unusual problem serving the request file.\n";
 const char *error_501_title = "Not Implemented";
 const char *error_501_form = "This server does not implement the requested method.\n";
+const char *error_415_title = "Unsupported Media Type";
+const char *error_415_form = "The uploaded file type is not accepted by this server.\n";
 
 //服务端实现之外但属于 HTTP 规范的请求方法。它们与无法识别的记号需要区分开：
 //前者应当回 501，后者是语法错误
@@ -63,6 +67,97 @@ bool parse_content_length(const char *text, long &out)
     }
     out = value;
     return true;
+}
+
+//上传目录。与站点根目录分开：站点根目录提供站点自身的内容，上传目录的内容来自
+//用户，两者的访问规则不同（后者一律按附件下载）
+const char *kUploadDir = "./upload";
+
+//允许上传的扩展名白名单。上传内容会落盘并通过 HTTP 提供，因此限定在明确的类型上：
+//不接受超文本与脚本（.html/.svg/.js），它们在浏览器中可携带并执行脚本
+const char *kAllowedUploadExt[] = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp",
+                                   ".mp4", ".webm", ".mp3", ".txt", ".pdf", ".zip"};
+
+bool is_allowed_upload_name(const std::string &name)
+{
+    const size_t dot = name.rfind('.');
+    if (dot == std::string::npos)
+        return false;
+
+    const std::string ext = name.substr(dot);
+    for (const char *allowed : kAllowedUploadExt)
+    {
+        if (strcasecmp(ext.c_str(), allowed) == 0)
+            return true;
+    }
+    return false;
+}
+
+//响应头中的取值不能带控制字符与引号，否则可注入额外头部或截断取值
+std::string sanitize_header_value(const std::string &text)
+{
+    std::string out;
+    out.reserve(text.size());
+    for (char c : text)
+    {
+        const unsigned char uc = static_cast<unsigned char>(c);
+        out.push_back((uc < 0x20 || uc == 0x7f || c == '"' || c == '\\') ? '_' : c);
+    }
+    return out;
+}
+
+//列表页中的文件名来自用户，必须转义，否则文件名里的标签会被当作页面结构
+std::string html_escape(const std::string &text)
+{
+    std::string out;
+    out.reserve(text.size());
+    for (char c : text)
+    {
+        switch (c)
+        {
+        case '&':
+            out += "&amp;";
+            break;
+        case '<':
+            out += "&lt;";
+            break;
+        case '>':
+            out += "&gt;";
+            break;
+        case '"':
+            out += "&quot;";
+            break;
+        case '\'':
+            out += "&#39;";
+            break;
+        default:
+            out.push_back(c);
+        }
+    }
+    return out;
+}
+
+//链接中的文件名同样需要转义，保证特殊字符不会改变链接指向
+std::string url_encode_segment(const std::string &text)
+{
+    static const char *kHex = "0123456789ABCDEF";
+    std::string out;
+    for (unsigned char c : text)
+    {
+        const bool unreserved = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+                                c == '.' || c == '-' || c == '_' || c == '~';
+        if (unreserved)
+        {
+            out.push_back(static_cast<char>(c));
+        }
+        else
+        {
+            out.push_back('%');
+            out.push_back(kHex[c >> 4]);
+            out.push_back(kHex[c & 0x0F]);
+        }
+    }
+    return out;
 }
 
 // 新增：根据文件扩展名返回 MIME 类型
@@ -844,23 +939,35 @@ http_conn::HTTP_CODE http_conn::do_request()
     if (m_method == POST && m_is_file_upload && strncmp(m_url, "/upload", 7) == 0)
     {
         HTTP_CODE ret = parse_multipart_content();
-        if (ret == GET_REQUEST)
-        {
-            if (save_uploaded_file())
-            {
-                strcpy(m_url, "/Upload-Success.html");
-            }
-            else
-            {
-                return BAD_REQUEST;
-            }
-        }
-        else
-        {
+        if (ret != GET_REQUEST)
             return BAD_REQUEST;
-        }
+
+        //扩展名白名单与体积上限在落盘之前校验
+        if (!is_allowed_upload_name(m_file_name))
+            return UNSUPPORTED_MEDIA_TYPE;
+        if (static_cast<long>(m_file_content.size()) > MAX_UPLOAD_SIZE)
+            return REQUEST_TOO_LARGE;
+
+        if (!save_uploaded_file())
+            return BAD_REQUEST;
+
+        strcpy(m_url, "/Upload-Success.html");
     }
     // =================================
+
+    // ========== 已上传文件的访问 ==========
+    //"GET /upload" 给出列表页，"GET /upload/<名称>" 返回对应文件，
+    //使上传后的内容可以通过 HTTP 取回（此前文件写入 ./upload/，
+    //而静态资源根目录是 ./root/，上传后无从访问）
+    if (m_method != POST && strncmp(m_url, "/upload", 7) == 0)
+    {
+        if (m_url[7] == '\0')
+            return build_upload_list();
+        if (m_url[7] == '/')
+            return serve_uploaded_file(m_url + 8);
+        return BAD_REQUEST; //形如 /uploadXYZ
+    }
+    // =====================================
 
     strcpy(m_real_file, doc_root);
     int len = strlen(doc_root);
@@ -956,9 +1063,22 @@ http_conn::HTTP_CODE http_conn::do_request()
     if (S_ISDIR(m_file_stat.st_mode))
         return BAD_REQUEST;
 
-    int fd = open(m_real_file, O_RDONLY);
-    m_file_address = (char *)mmap(0, m_file_stat.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-    close(fd);
+    //空文件不映射：长度为 0 的映射会失败，其响应由 process_write 直接给出空正文
+    if (m_file_stat.st_size > 0)
+    {
+        const int fd = open(m_real_file, O_RDONLY);
+        if (fd < 0)
+            return NO_RESOURCE;
+
+        m_file_address = (char *)mmap(0, m_file_stat.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+        close(fd);
+        if (m_file_address == MAP_FAILED)
+        {
+            //映射失败时置空，避免后续 unmap 与 writev 作用于无效地址
+            m_file_address = nullptr;
+            return INTERNAL_ERROR;
+        }
+    }
     return FILE_REQUEST;
 }
 void http_conn::unmap()
@@ -1202,6 +1322,25 @@ bool http_conn::process_write(HTTP_CODE ret)
             return false;
         break;
     }
+    case UNSUPPORTED_MEDIA_TYPE:
+    {
+        add_status_line(415, error_415_title);
+        add_content_type(kErrorContentType);
+        add_headers(strlen(error_415_form));
+        if (!add_content(error_415_form))
+            return false;
+        break;
+    }
+    case DYNAMIC_CONTENT:
+    {
+        //正文由请求处理阶段生成（目前用于上传列表页）
+        add_status_line(200, ok_200_title);
+        add_content_type(m_inline_content_type.c_str());
+        add_headers(static_cast<int>(m_inline_body.size()));
+        if (!add_content(m_inline_body.c_str()))
+            return false;
+        break;
+    }
     case FILE_REQUEST:
     {
         add_status_line(200, ok_200_title);
@@ -1209,6 +1348,16 @@ bool http_conn::process_write(HTTP_CODE ret)
         // ========== 新增：设置正确的 Content-Type ==========
         add_content_type(get_mime_type(m_real_file));
         // =================================================
+
+        if (m_is_upload_download)
+        {
+            //上传内容来自用户，一律按附件下载：可携带脚本的类型（HTML、SVG 等）
+            //若就地渲染，会构成同源的存储型 XSS
+            const std::string path(m_real_file);
+            const size_t slash = path.find_last_of('/');
+            const std::string name = (slash == std::string::npos) ? path : path.substr(slash + 1);
+            add_response("Content-Disposition: attachment; filename=\"%s\"\r\n", sanitize_header_value(name).c_str());
+        }
 
         if (m_file_stat.st_size != 0)
         {
@@ -1317,9 +1466,12 @@ void http_conn::process()
 void http_conn::init_file_upload_state()
 {
     m_is_file_upload = false;
+    m_is_upload_download = false;
     m_boundary.clear();
     m_file_name.clear();
     m_file_content.clear();
+    m_inline_body.clear();
+    m_inline_content_type.clear();
 }
 
 // 新增：解析 multipart/form-data 请求体，从 m_string 中提取文件名和内容
@@ -1375,35 +1527,119 @@ http_conn::HTTP_CODE http_conn::parse_multipart_content()
     if (content_end >= 2 && body.substr(content_end - 2, 2) == "\r\n")
         content_end -= 2;
 
+    //空文件是合法输入：只要求存在内容分隔，不再要求内容非空
     m_file_content = body.substr(content_start, content_end - content_start);
-    if (m_file_content.empty())
-        return BAD_REQUEST;
-
     return GET_REQUEST;
 }
 
-// 新增：将 m_file_content 写入 ./upload/ 目录
+// 新增：将 m_file_content 写入上传目录
 bool http_conn::save_uploaded_file()
 {
-    if (m_file_name.empty() || m_file_content.empty())
+    if (m_file_name.empty())
         return false;
 
-    const char *upload_dir = "./upload/";
+    const std::string upload_dir(kUploadDir);
     // 确保目录存在
-    if (access(upload_dir, F_OK) == -1)
-    {
-        if (mkdir(upload_dir, 0755) == -1)
-        {
-            return false;
-        }
-    }
+    if (access(upload_dir.c_str(), F_OK) != 0 && mkdir(upload_dir.c_str(), 0755) != 0)
+        return false;
 
-    std::string filepath = std::string(upload_dir) + m_file_name;
+    //文件名为空时 open 会失败，因此上面已先判空；此处只做单段限定，
+    //与读取路径的约束一致，保证写入与读取落在同一目录内
+    if (m_file_name.find('/') != std::string::npos)
+        return false;
+
+    const std::string filepath = upload_dir + "/" + m_file_name;
     std::ofstream ofs(filepath.c_str(), std::ios::binary);
     if (!ofs.is_open())
         return false;
 
-    ofs.write(m_file_content.c_str(), m_file_content.size());
-    ofs.close();
-    return true;
+    ofs.write(m_file_content.data(), static_cast<std::streamsize>(m_file_content.size()));
+    return ofs.good();
+}
+
+//返回已上传的文件。名称限定为单一段落，因此只会落在上传目录内
+http_conn::HTTP_CODE http_conn::serve_uploaded_file(const char *name)
+{
+    const std::string filename(name);
+    if (filename.empty() || filename == "." || filename == ".." || filename.find('/') != std::string::npos)
+        return BAD_REQUEST;
+
+    const std::string path = std::string(kUploadDir) + "/" + filename;
+    if (stat(path.c_str(), &m_file_stat) < 0)
+        return NO_RESOURCE;
+
+    if (!S_ISREG(m_file_stat.st_mode))
+        return FORBIDDEN_REQUEST;
+
+    snprintf(m_real_file, sizeof(m_real_file), "%s", path.c_str());
+
+    //空文件不映射：长度为 0 的映射会失败，其响应由 process_write 直接给出空正文
+    if (m_file_stat.st_size > 0)
+    {
+        const int fd = open(m_real_file, O_RDONLY);
+        if (fd < 0)
+            return NO_RESOURCE;
+
+        m_file_address = (char *)mmap(0, m_file_stat.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+        close(fd);
+        if (m_file_address == MAP_FAILED)
+        {
+            m_file_address = nullptr;
+            return INTERNAL_ERROR;
+        }
+    }
+
+    m_is_upload_download = true;
+    return FILE_REQUEST;
+}
+
+//生成已上传文件的列表页，链接指向各文件的下载地址
+http_conn::HTTP_CODE http_conn::build_upload_list()
+{
+    DIR *dir = opendir(kUploadDir);
+    if (dir == nullptr)
+        return INTERNAL_ERROR;
+
+    std::vector<std::pair<std::string, long>> files;
+    while (struct dirent *entry = readdir(dir))
+    {
+        const std::string name(entry->d_name);
+        if (name.empty() || name[0] == '.')
+            continue;
+
+        const std::string path = std::string(kUploadDir) + "/" + name;
+        struct stat info;
+        if (stat(path.c_str(), &info) != 0 || !S_ISREG(info.st_mode))
+            continue;
+
+        files.emplace_back(name, static_cast<long>(info.st_size));
+    }
+    closedir(dir);
+
+    std::sort(files.begin(), files.end());
+
+    std::string html;
+    html += "<!DOCTYPE html>\n<html lang=\"zh-CN\"><head><meta charset=\"utf-8\">";
+    html += "<title>已上传文件</title></head>\n<body>\n<h2>已上传文件</h2>\n";
+
+    if (files.empty())
+    {
+        html += "<p>暂无文件。</p>\n";
+    }
+    else
+    {
+        html += "<ul>\n";
+        for (const auto &file : files)
+        {
+            //文件名来自用户输入，链接与展示都要转义
+            html += "<li><a href=\"/upload/" + url_encode_segment(file.first) + "\">" + html_escape(file.first) +
+                    "</a>（" + std::to_string(file.second) + " 字节）</li>\n";
+        }
+        html += "</ul>\n";
+    }
+    html += "</body></html>\n";
+
+    m_inline_body = html;
+    m_inline_content_type = "text/html; charset=utf-8";
+    return DYNAMIC_CONTENT;
 }
