@@ -933,6 +933,12 @@ http_conn::HTTP_CODE http_conn::process_read()
     return NO_REQUEST;
 }
 
+bool http_conn::set_real_file(const char *relative_path)
+{
+    const int written = snprintf(m_real_file, sizeof(m_real_file), "%s%s", doc_root, relative_path);
+    return written > 0 && written < static_cast<int>(sizeof(m_real_file));
+}
+
 http_conn::HTTP_CODE http_conn::do_request()
 {
     // ========== 文件上传处理 ==========
@@ -969,8 +975,6 @@ http_conn::HTTP_CODE http_conn::do_request()
     }
     // =====================================
 
-    strcpy(m_real_file, doc_root);
-    int len = strlen(doc_root);
     //printf("m_url:%s\n", m_url);
     const char *p = strrchr(m_url, '/');
 
@@ -981,8 +985,8 @@ http_conn::HTTP_CODE http_conn::do_request()
         if (m_string == nullptr)
             return BAD_REQUEST;
 
-        //将请求路径映射为根目录下的实际文件路径
-        snprintf(m_real_file + len, FILENAME_LEN - len, "/%s", m_url + 2);
+        //此处不预拼路径：注册/登录的结果随后会把 m_url 改写为跳转页面，
+        //实际路径统一由下方的映射逻辑写入（见 set_real_file）
 
         //按 form-urlencoded 规则解析请求体，字段名与顺序都不再是解析前提
         const std::map<std::string, std::string> params = parse_form_body(m_string, m_content_length);
@@ -1025,33 +1029,43 @@ http_conn::HTTP_CODE http_conn::do_request()
         }
     }
 
+    //把请求路径映射为根目录下的实际文件路径。拼接在 m_real_file 的容量内一次完成，
+    //装不下即判为错误请求——此前的写法按剩余空间传长度，根目录过长时长度参数为负，
+    //转为无符号后写入越界地址
     if (*(p + 1) == '0')
     {
-        snprintf(m_real_file + len, FILENAME_LEN - len, "%s", "/register.html");
+        if (!set_real_file("/register.html"))
+            return BAD_REQUEST;
     }
     else if (*(p + 1) == '1')
     {
-        snprintf(m_real_file + len, FILENAME_LEN - len, "%s", "/log.html");
+        if (!set_real_file("/log.html"))
+            return BAD_REQUEST;
     }
     else if (*(p + 1) == '5')
     {
-        snprintf(m_real_file + len, FILENAME_LEN - len, "%s", "/picture.html");
+        if (!set_real_file("/picture.html"))
+            return BAD_REQUEST;
     }
     else if (*(p + 1) == '6')
     {
-        snprintf(m_real_file + len, FILENAME_LEN - len, "%s", "/video.html");
+        if (!set_real_file("/video.html"))
+            return BAD_REQUEST;
     }
     else if (*(p + 1) == '7')
     {
-        snprintf(m_real_file + len, FILENAME_LEN - len, "%s", "/fans.html");
+        if (!set_real_file("/fans.html"))
+            return BAD_REQUEST;
     }
     else if (*(p + 1) == '8')
     {
-        snprintf(m_real_file + len, FILENAME_LEN - len, "%s", "/upload.html");
+        if (!set_real_file("/upload.html"))
+            return BAD_REQUEST;
     }
     else
     {
-        snprintf(m_real_file + len, FILENAME_LEN - len, "%s", m_url);
+        if (!set_real_file(m_url))
+            return BAD_REQUEST;
     }
 
     if (stat(m_real_file, &m_file_stat) < 0)
@@ -1571,6 +1585,10 @@ http_conn::HTTP_CODE http_conn::serve_uploaded_file(const char *name)
     if (!S_ISREG(m_file_stat.st_mode))
         return FORBIDDEN_REQUEST;
 
+    //上传目录加文件名超出 m_real_file 容量时无法表示该路径，按错误请求处理，
+    //否则截断后的名称会打开并非请求目标的文件
+    if (path.size() >= sizeof(m_real_file))
+        return BAD_REQUEST;
     snprintf(m_real_file, sizeof(m_real_file), "%s", path.c_str());
 
     //空文件不映射：长度为 0 的映射会失败，其响应由 process_write 直接给出空正文

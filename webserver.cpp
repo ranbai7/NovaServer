@@ -63,6 +63,15 @@ void WebServer::init(const Config &config)
         std::fprintf(stderr, "站点根目录不可用: %s (%s)\n", config.root_dir.c_str(), strerror(errno));
         exit(EXIT_FAILURE);
     }
+    //根目录要与请求路径拼进 http_conn 的 m_real_file，装不下时每个请求都无法映射。
+    //这类错误只取决于配置，放在启动阶段一次性拦下，比在每个请求里才发现更清楚
+    const size_t root_len = strlen(resolved);
+    if (root_len > static_cast<size_t>(http_conn::MAX_ROOT_DIR_LEN))
+    {
+        std::fprintf(stderr, "站点根目录过长: %s（%zu 字符，上限 %d）\n", resolved, root_len,
+                     http_conn::MAX_ROOT_DIR_LEN);
+        exit(EXIT_FAILURE);
+    }
     free(m_root);
     m_root = strdup(resolved);
 }
@@ -104,6 +113,13 @@ void WebServer::log_write()
     if (mkdir(m_log_dir.c_str(), 0755) != 0 && errno != EEXIST)
     {
         std::fprintf(stderr, "创建日志目录 %s 失败: %s\n", m_log_dir.c_str(), strerror(errno));
+    }
+
+    //Log 内部的文件名缓冲区放不下更长的名称，超长会被静默截断成另一个文件名
+    if (m_log_file.size() >= Log::LOG_NAME_SIZE)
+    {
+        std::fprintf(stderr, "日志文件名过长: %zu 字符，上限 %zu\n", m_log_file.size(), Log::LOG_NAME_SIZE - 1);
+        exit(EXIT_FAILURE);
     }
 
     //路径形如「目录/文件名」：Log::init 会把最后一个 '/' 之前的部分作为目录、

@@ -61,7 +61,12 @@ bool Log::init(const char *file_name, int close_log, int log_buf_size, int split
     }
     else
     {
-        strcpy(log_name, p + 1);
+        //与下面的 dir_name 同样限长：文件名来自配置，可能远超 log_name 的容量
+        size_t name_len = strlen(p + 1);
+        if (name_len > sizeof(log_name) - 1)
+            name_len = sizeof(log_name) - 1;
+        memcpy(log_name, p + 1, name_len);
+        log_name[name_len] = '\0';
         //仅复制目录部分（含末尾的 '/'），并保证不越界且以 '\0' 结尾
         size_t dir_len = static_cast<size_t>(p - file_name) + 1;
         if (dir_len > sizeof(dir_name) - 1)

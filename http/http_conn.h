@@ -32,6 +32,10 @@ class http_conn
 {
 public:
     static const int FILENAME_LEN = 200;
+    //固定页面中最长的路径是上传成功后的跳转页 "/Upload-Success.html"（20 字节）。
+    //根目录长度须为它留出余量，否则这些页面拼进 m_real_file 时会被截掉
+    static const int LONGEST_PAGE_PATH_LEN = 20;
+    static const int MAX_ROOT_DIR_LEN = FILENAME_LEN - LONGEST_PAGE_PATH_LEN - 1;
     //两个缓冲区按需扩容：下面两个常量为初始大小，上限见 MAX_*_SIZE。
     //请求体超出上限时返回 413，而不是像此前那样把连接直接关掉
     static const int READ_BUFFER_SIZE = 2048;
@@ -105,6 +109,9 @@ private:
     HTTP_CODE parse_headers(char *text);
     HTTP_CODE parse_content(char *text);
     HTTP_CODE do_request();
+    //把「根目录 + 相对路径」写入 m_real_file。总长超出容量时返回 false，
+    //调用方应判为错误请求：被截断的路径会指向并非请求目标的文件
+    bool set_real_file(const char *relative_path);
     char *get_line() { return m_read_buf.data() + m_start_line; };
     LINE_STATUS parse_line();
     void unmap();

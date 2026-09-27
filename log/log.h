@@ -11,6 +11,10 @@
 class Log
 {
 public:
+    //日志文件名部分的缓冲区容量，含结尾的 '\0'。调用方（WebServer）据此
+    //在启动时校验配置中的文件名长度，避免超长名称被静默截断
+    static const size_t LOG_NAME_SIZE = 128;
+
     //C++11以后,使用局部变量懒汉不用加锁
     static Log *get_instance()
     {
@@ -48,13 +52,13 @@ private:
     }
 
 private:
-    char dir_name[128]; //路径名
-    char log_name[128]; //log文件名
-    int m_split_lines;  //日志最大行数
-    int m_log_buf_size; //日志缓冲区大小
-    long long m_count;  //日志行数记录
-    int m_today;        //因为按天分类,记录当前时间是那一天
-    FILE *m_fp;         //打开log的文件指针
+    char dir_name[128];           //路径名
+    char log_name[LOG_NAME_SIZE]; //log文件名
+    int m_split_lines;            //日志最大行数
+    int m_log_buf_size;           //日志缓冲区大小
+    long long m_count;            //日志行数记录
+    int m_today;                  //因为按天分类,记录当前时间是那一天
+    FILE *m_fp;                   //打开log的文件指针
     char *m_buf;
     block_queue<std::string> *m_log_queue; //阻塞队列
     bool m_is_async;                       //是否同步标志位
