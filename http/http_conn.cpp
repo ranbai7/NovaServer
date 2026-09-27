@@ -22,8 +22,48 @@ const char *error_404_title = "Not Found";
 const char *error_404_form = "The requested file was not found on this server.\n";
 const char *error_413_title = "Request Entity Too Large";
 const char *error_413_form = "The request is larger than this server is willing to process.\n";
+const char *error_431_title = "Request Header Fields Too Large";
+const char *error_431_form = "The request headers are larger than this server is willing to process.\n";
 const char *error_500_title = "Internal Error";
 const char *error_500_form = "There was an unusual problem serving the request file.\n";
+const char *error_501_title = "Not Implemented";
+const char *error_501_form = "This server does not implement the requested method.\n";
+
+//服务端实现之外但属于 HTTP 规范的请求方法。它们与无法识别的记号需要区分开：
+//前者应当回 501，后者是语法错误
+bool is_known_method(const char *method)
+{
+    static const char *kMethods[] = {"PUT", "DELETE", "TRACE", "OPTIONS", "CONNECT", "PATCH"};
+    for (const char *known : kMethods)
+    {
+        if (strcasecmp(method, known) == 0)
+            return true;
+    }
+    return false;
+}
+
+//解析 Content-Length 的取值。只接受非空的十进制数字串：
+//atol 会把 "abc" 静默当作 0、把 "12abc" 当作 12，两种都会让长度与实际不符
+bool parse_content_length(const char *text, long &out)
+{
+    if (text == nullptr || *text == '\0')
+        return false;
+
+    long value = 0;
+    for (const char *p = text; *p != '\0'; ++p)
+    {
+        if (*p < '0' || *p > '9')
+            return false;
+        value = value * 10 + (*p - '0');
+        if (value > http_conn::MAX_REQUEST_SIZE)
+        {
+            out = value; //交给调用方判为超限
+            return true;
+        }
+    }
+    out = value;
+    return true;
+}
 
 // 新增：根据文件扩展名返回 MIME 类型
 static const char *get_mime_type(const char *path)
@@ -410,6 +450,8 @@ void http_conn::init()
     init_file_upload_state();
 
     m_oversized = false;
+    m_has_content_length = false;
+    m_header_end = 0;
     //连接复用时不保留上次为超大请求扩容出来的缓冲，避免大请求之后内存被长期占用
     if (m_read_buf.capacity() > static_cast<size_t>(READ_BUFFER_SIZE) * 4)
         std::vector<char>().swap(m_read_buf);
@@ -573,8 +615,15 @@ http_conn::HTTP_CODE http_conn::parse_request_line(char *text)
         m_method = POST;
         cgi = 1;
     }
+    else if (strcasecmp(method, "HEAD") == 0)
+    {
+        //HEAD 的响应头与 GET 一致，只是不发送正文
+        m_method = HEAD;
+    }
+    else if (is_known_method(method))
+        return METHOD_NOT_IMPLEMENTED; //规范定义但本服务端未实现
     else
-        return BAD_REQUEST;
+        return BAD_REQUEST; //不是合法的请求方法
     m_url += strspn(m_url, " \t");
     m_version = strpbrk(m_url, " \t");
     if (!m_version)
@@ -622,8 +671,16 @@ http_conn::HTTP_CODE http_conn::parse_request_line(char *text)
 //解析http请求的一个头部信息
 http_conn::HTTP_CODE http_conn::parse_headers(char *text)
 {
+    //头部整体长度上限。请求行的结束位置即头部的起点，因此以解析游标衡量
+    if (m_checked_idx > MAX_HEADER_SIZE)
+        return REQUEST_HEADER_TOO_LARGE;
+
     if (text[0] == '\0')
     {
+        //本服务端只接受 HTTP/1.1，而该版本要求请求必须携带 Host
+        if (m_host == nullptr)
+            return BAD_REQUEST;
+
         if (m_content_length != 0)
         {
             //请求体的起点在此处记录一次。解析游标 m_checked_idx 会随每次按行扫描
@@ -647,7 +704,17 @@ http_conn::HTTP_CODE http_conn::parse_headers(char *text)
     {
         text += 15;
         text += strspn(text, " \t");
-        m_content_length = atol(text);
+
+        //重复的 Content-Length 会让长度出现两种解释，是请求走私的常见手法，直接拒绝
+        if (m_has_content_length)
+            return BAD_REQUEST;
+        m_has_content_length = true;
+
+        if (!parse_content_length(text, m_content_length))
+            return BAD_REQUEST;
+        //长度本身已超过服务端上限时无需再传输请求体
+        if (m_content_length > MAX_REQUEST_SIZE)
+            return REQUEST_TOO_LARGE;
     }
     else if (strncasecmp(text, "Host:", 5) == 0)
     {
@@ -733,8 +800,11 @@ http_conn::HTTP_CODE http_conn::process_read()
         case CHECK_STATE_REQUESTLINE:
         {
             ret = parse_request_line(text);
-            if (ret == BAD_REQUEST)
-                return BAD_REQUEST;
+            //请求行一旦出结果即为最终结果。只判 BAD_REQUEST 是不够的：
+            //方法未实现等其它取值会被当作「还没解析完」，
+            //从而把下一行（例如 Host 头）当成请求行继续解析
+            if (ret != NO_REQUEST)
+                return ret;
             break;
         }
         case CHECK_STATE_HEADER:
@@ -745,6 +815,10 @@ http_conn::HTTP_CODE http_conn::process_read()
             else if (ret == GET_REQUEST)
             {
                 return do_request();
+            }
+            else if (ret != NO_REQUEST)
+            {
+                return ret; //头部过长或长度字段已超限等，直接作为最终结果
             }
             break;
         }
@@ -1036,7 +1110,12 @@ bool http_conn::add_linger()
 }
 bool http_conn::add_blank_line()
 {
-    return add_response("%s", "\r\n");
+    if (!add_response("%s", "\r\n"))
+        return false;
+
+    //空行写完即响应头结束，正文从此处开始。HEAD 响应据此截断掉正文
+    m_header_end = m_write_idx;
+    return true;
 }
 bool http_conn::add_content(const char *content)
 {
@@ -1093,6 +1172,27 @@ bool http_conn::process_write(HTTP_CODE ret)
             return false;
         break;
     }
+    case REQUEST_HEADER_TOO_LARGE:
+    {
+        m_linger = false;
+        add_status_line(431, error_431_title);
+        add_content_type(kErrorContentType);
+        add_headers(strlen(error_431_form));
+        if (!add_content(error_431_form))
+            return false;
+        break;
+    }
+    case METHOD_NOT_IMPLEMENTED:
+    {
+        //方法未被实现。响应中给出 Allow 告知实际支持的方法
+        add_status_line(501, error_501_title);
+        add_response("Allow:%s\r\n", "GET, HEAD, POST");
+        add_content_type(kErrorContentType);
+        add_headers(strlen(error_501_form));
+        if (!add_content(error_501_form))
+            return false;
+        break;
+    }
     case FORBIDDEN_REQUEST:
     {
         add_status_line(403, error_403_title);
@@ -1117,8 +1217,19 @@ bool http_conn::process_write(HTTP_CODE ret)
             m_iv[0].iov_len = m_write_idx;
             m_iv[1].iov_base = m_file_address;
             m_iv[1].iov_len = m_file_stat.st_size;
-            m_iv_count = 2;
-            bytes_to_send = m_write_idx + m_file_stat.st_size;
+
+            if (m_method == HEAD)
+            {
+                //HEAD 只发头部：Content-Length 仍是文件的真实长度，
+                //但正文不进入发送队列
+                m_iv_count = 1;
+                bytes_to_send = m_write_idx;
+            }
+            else
+            {
+                m_iv_count = 2;
+                bytes_to_send = m_write_idx + m_file_stat.st_size;
+            }
             return true;
         }
         else
@@ -1177,6 +1288,13 @@ bool http_conn::process_write(HTTP_CODE ret)
     m_iv[0].iov_len = m_write_idx;
     m_iv_count = 1;
     bytes_to_send = m_write_idx;
+
+    //HEAD 的正文与头部同处写缓冲区，按响应头结束的位置截断
+    if (m_method == HEAD && m_header_end > 0)
+    {
+        m_iv[0].iov_len = m_header_end;
+        bytes_to_send = m_header_end;
+    }
     return true;
 }
 void http_conn::process()

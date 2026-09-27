@@ -38,6 +38,7 @@ public:
     static const int WRITE_BUFFER_SIZE = 1024;
     static const int MAX_REQUEST_SIZE = 8 * 1024 * 1024;
     static const int MAX_RESPONSE_SIZE = 64 * 1024;
+    static const int MAX_HEADER_SIZE = 8 * 1024; //请求头部（不含请求行与请求体）的长度上限
     enum METHOD
     {
         GET = 0,
@@ -66,6 +67,8 @@ public:
         FILE_REQUEST,
         INTERNAL_ERROR,
         REQUEST_TOO_LARGE,
+        REQUEST_HEADER_TOO_LARGE,
+        METHOD_NOT_IMPLEMENTED,
         CLOSED_CONNECTION
     };
     enum LINE_STATUS
@@ -137,7 +140,9 @@ private:
     int m_start_line;
     std::vector<char> m_write_buf;
     int m_write_idx;
-    bool m_oversized; //请求体已超过 MAX_REQUEST_SIZE
+    int m_header_end;          //响应头结束（即正文起始）在写缓冲区中的位置
+    bool m_oversized;          //请求体已超过 MAX_REQUEST_SIZE
+    bool m_has_content_length; //是否已出现过 Content-Length 头
     CHECK_STATE m_check_state;
     METHOD m_method;
     char m_real_file[FILENAME_LEN];
