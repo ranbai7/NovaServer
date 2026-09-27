@@ -15,7 +15,8 @@ TEST(Locker, ProvidesMutualExclusion)
     long long counter = 0;
     const int kPerThread = 20000;
 
-    auto worker = [&mutex, &counter] {
+    auto worker = [&mutex, &counter]
+    {
         for (int i = 0; i < kPerThread; ++i)
         {
             mutex.lock();
@@ -43,10 +44,12 @@ TEST(Sem, BlocksUntilPosted)
     sem semaphore(0);
     std::atomic<bool> released{false};
 
-    std::thread waiter([&semaphore, &released] {
-        semaphore.wait();
-        released = true;
-    });
+    std::thread waiter(
+        [&semaphore, &released]
+        {
+            semaphore.wait();
+            released = true;
+        });
 
     // 尚未 post，等待方应当仍处于阻塞状态
     EXPECT_FALSE(released.load());

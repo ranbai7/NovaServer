@@ -44,8 +44,7 @@ void connection_pool::init(const string &url, const string &User, const string &
 
         //保留句柄本身：mysql_real_connect 失败时返回空指针，
         //但错误信息仍挂在传入的句柄上，直接覆盖会丢掉失败原因
-        if (mysql_real_connect(con, url.c_str(), User.c_str(), PassWord.c_str(), DBName.c_str(), Port, NULL, 0) ==
-            NULL)
+        if (mysql_real_connect(con, url.c_str(), User.c_str(), PassWord.c_str(), DBName.c_str(), Port, NULL, 0) == NULL)
         {
             LOG_ERROR("connect to MySQL %s:%d failed: %s", url.c_str(), Port, mysql_error(con));
             exit(EXIT_FAILURE);

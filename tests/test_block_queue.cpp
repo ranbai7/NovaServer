@@ -108,10 +108,12 @@ TEST(BlockQueue, TimedPopSucceedsWhenDataArrives)
     block_queue<int> queue(kQueueCapacity);
     int value = 0;
 
-    std::thread producer([&queue] {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        queue.push(42);
-    });
+    std::thread producer(
+        [&queue]
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            queue.push(42);
+        });
 
     EXPECT_TRUE(queue.pop(value, 2000));
     EXPECT_EQ(value, 42);
@@ -125,23 +127,27 @@ TEST(BlockQueue, ConcurrentProducerConsumerKeepsAllElements)
     block_queue<int> queue(64);
     std::atomic<long long> sum{0};
 
-    std::thread producer([&queue] {
-        for (int i = 1; i <= kTotal; ++i)
+    std::thread producer(
+        [&queue]
         {
-            while (!queue.push(i))
-                std::this_thread::yield();
-        }
-    });
+            for (int i = 1; i <= kTotal; ++i)
+            {
+                while (!queue.push(i))
+                    std::this_thread::yield();
+            }
+        });
 
-    std::thread consumer([&queue, &sum] {
-        int value = 0;
-        for (int i = 0; i < kTotal; ++i)
+    std::thread consumer(
+        [&queue, &sum]
         {
-            if (!queue.pop(value))
-                return;
-            sum += value;
-        }
-    });
+            int value = 0;
+            for (int i = 0; i < kTotal; ++i)
+            {
+                if (!queue.pop(value))
+                    return;
+                sum += value;
+            }
+        });
 
     producer.join();
     consumer.join();

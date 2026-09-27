@@ -115,7 +115,7 @@ TEST_F(ConfigTest, KeepsDefaultsForAbsentKeys)
     Config config;
     load_ok("[server]\nport = 9101\n", config);
     EXPECT_EQ(config.PORT, 9101);
-    EXPECT_EQ(config.thread_num, 8);   //文件中未给出的项沿用默认值
+    EXPECT_EQ(config.thread_num, 8); //文件中未给出的项沿用默认值
     EXPECT_EQ(config.db_port, 3306);
     EXPECT_EQ(config.log_file, "server");
 }

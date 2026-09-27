@@ -157,7 +157,8 @@ bool Config::apply(std::map<std::string, std::string> &items, std::string &error
     std::string message;
 
     //逐项应用。即使某项取值非法也继续处理其余项，这样可以一次性定位文件中的全部格式问题
-    auto int_item = [&](const std::string &section, const std::string &key, int &out) {
+    auto int_item = [&](const std::string &section, const std::string &key, int &out)
+    {
         std::string value;
         bool found = false;
         take(items, section, key, value, found);
@@ -166,7 +167,8 @@ bool Config::apply(std::map<std::string, std::string> &items, std::string &error
         if (!parse_int(value, out) && message.empty())
             message = "配置项 " + key + " 的取值不是合法整数: " + value;
     };
-    auto str_item = [&](const std::string &section, const std::string &key, std::string &out) {
+    auto str_item = [&](const std::string &section, const std::string &key, std::string &out)
+    {
         std::string value;
         bool found = false;
         take(items, section, key, value, found);
