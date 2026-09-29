@@ -255,7 +255,7 @@ void WebServer::on_new_connection(int connfd, const sockaddr_in &peer)
         [this, loop, connfd, peer]
         {
             const std::shared_ptr<TcpConnection> conn = std::make_shared<TcpConnection>(
-                loop, connfd, peer, m_root, m_conn_trig_mode, m_close_log, IDLE_TIMEOUT_MS);
+                loop, connfd, peer, m_root, m_conn_trig_mode, m_close_log, m_connPool, IDLE_TIMEOUT_MS);
             conn->set_close_callback([this](const std::shared_ptr<TcpConnection> &closed)
                                      { on_connection_closed(closed); });
 

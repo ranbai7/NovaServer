@@ -23,7 +23,7 @@ public:
     using CloseCallback = std::function<void(const std::shared_ptr<TcpConnection> &)>;
 
     TcpConnection(EventLoop *loop, int connfd, const sockaddr_in &peer, const char *root, int trig_mode, int close_log,
-                  int idle_timeout_ms);
+                  connection_pool *connPool, int idle_timeout_ms);
     ~TcpConnection();
 
     TcpConnection(const TcpConnection &) = delete;

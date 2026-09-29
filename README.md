@@ -259,17 +259,6 @@ ctest --test-dir build --output-on-failure
 
 写盘速度跟不上时，实现会丢弃新行并在日志里写下「已丢弃 N 行」，使丢失可见而不是无声无息。
 
-已知问题
-------
-
-**登录与注册会使服务端崩溃。** `do_request` 的登录/注册分支把成员 `mysql` 交给
-`register_user` / 登录查询，而该成员只在 `reset()` 里被置空、从未从连接池取得过连接，
-因此 `mysql_stmt_init` 收到空指针并段错误。
-
-根因是迁移时丢掉了原项目在该分支开头的 `connectionRAII mysqlcon(&mysql, m_connPool);`。
-该缺陷自初始导入即存在，与静态资源、HEAD、上传、超时回收等路径无关（它们均正常）。
-功能冒烟脚本默认跳过这条路径，`SMOKE_DB=1` 可启用以复现。
-
 致谢
 ------------
 本项目基于 qinguoyi/TinyWebServer 进行二次开发，只用于自主学习，遵守原项目许可证。

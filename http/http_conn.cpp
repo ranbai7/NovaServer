@@ -501,7 +501,8 @@ void http_conn::set_event_notifier(EventCallback want_read, EventCallback want_w
 }
 
 //初始化连接,外部调用初始化套接字地址
-void http_conn::init(int sockfd, const sockaddr_in &addr, const char *root, int TRIGMode, int close_log)
+void http_conn::init(int sockfd, const sockaddr_in &addr, const char *root, int TRIGMode, int close_log,
+                     connection_pool *connPool)
 {
     m_sockfd = sockfd;
     m_address = addr;
@@ -510,6 +511,7 @@ void http_conn::init(int sockfd, const sockaddr_in &addr, const char *root, int 
     doc_root = root;
     m_TRIGMode = TRIGMode;
     m_close_log = close_log;
+    m_connPool = connPool;
 
     //描述符的注册不在这里：协议层只表达「关心什么事件」，注册由连接的所有者
     //连同触发模式一并完成（见 Channel）
@@ -1077,6 +1079,17 @@ http_conn::HTTP_CODE http_conn::do_request()
         //POST 但未携带请求体时 m_string 为空，此处的解析无从进行
         if (m_string == nullptr)
             return BAD_REQUEST;
+
+        //登录与注册都要查库，因此在这里从连接池借一个连接，离开本分支时由
+        //connectionRAII 归还。此前这里直接用成员 mysql 而从未取过连接，它恒为
+        //空指针，mysql_stmt_init 收到空指针会直接段错误
+        if (m_connPool == nullptr)
+            return INTERNAL_ERROR;
+        connectionRAII mysqlcon(&mysql, m_connPool);
+        //连接池已建立却借不到连接，说明池是空的。如实返回 500 而不是把空指针
+        //交给后面的查询
+        if (mysql == nullptr)
+            return INTERNAL_ERROR;
 
         //此处不预拼路径：注册/登录的结果随后会把 m_url 改写为跳转页面，
         //实际路径统一由下方的映射逻辑写入（见 set_real_file）

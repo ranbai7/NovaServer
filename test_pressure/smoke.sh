@@ -12,9 +12,8 @@
 # 环境变量:
 #   HOST=127.0.0.1        服务地址
 #   IDLE_WAIT=17          超时回收用例的等待秒数（须大于服务端的空闲回收时间）
-#   SMOKE_DB=0            是否验证登录/注册（需要数据库）。默认关闭：
-#                         该路径目前会把服务端打崩——do_request 把一直是空的
-#                         MYSQL* 交给了 mysql_stmt_init，详见 README 的已知问题
+#   SMOKE_DB=0            是否验证登录/注册，默认开启。该组用例会往数据库里写入
+#                         一个以进程号命名的一次性用户（不会自动清理）
 #
 # 退出码非 0 表示有用例未通过。
 set -u
@@ -24,7 +23,7 @@ HOST="${HOST:-127.0.0.1}"
 PORT="${1:-9006}"
 BASE="http://${HOST}:${PORT}"
 IDLE_WAIT="${IDLE_WAIT:-17}"
-SMOKE_DB="${SMOKE_DB:-0}"
+SMOKE_DB="${SMOKE_DB:-1}"
 
 PASS=0
 FAIL=0
@@ -68,7 +67,7 @@ if [ "$SMOKE_DB" = "1" ]; then
   check_code "POST 口令错误"   200 -X POST -d "user=${USER}&password=wrong" "${BASE}/2CGISQL.cgi"
   check_code "POST 缺少字段"   400 -X POST -d "user=${USER}" "${BASE}/2CGISQL.cgi"
 else
-  echo "  已跳过（设 SMOKE_DB=1 启用；该路径当前会使服务端崩溃，见脚本头部说明）"
+  echo "  已跳过（SMOKE_DB=0）"
 fi
 
 echo "=== 文件上传闭环 ==="

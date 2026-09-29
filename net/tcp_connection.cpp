@@ -6,12 +6,12 @@
 #include <unistd.h>
 
 TcpConnection::TcpConnection(EventLoop *loop, int connfd, const sockaddr_in &peer, const char *root, int trig_mode,
-                             int close_log, int idle_timeout_ms)
+                             int close_log, connection_pool *connPool, int idle_timeout_ms)
     : m_loop(loop), m_fd(connfd), m_peer(peer), m_idle_timeout_ms(idle_timeout_ms), m_timer_id(0), m_closed(false)
 {
     m_channel.reset(new Channel(loop, connfd));
     m_channel->set_trig_mode(trig_mode);
-    m_conn.init(connfd, peer, root, trig_mode, close_log);
+    m_conn.init(connfd, peer, root, trig_mode, close_log, connPool);
 }
 
 TcpConnection::~TcpConnection()

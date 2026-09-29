@@ -115,7 +115,8 @@ public:
     using EventCallback = std::function<void()>;
     void set_event_notifier(EventCallback want_read, EventCallback want_write);
 
-    void init(int sockfd, const sockaddr_in &addr, const char *root, int TRIGMode, int close_log);
+    void init(int sockfd, const sockaddr_in &addr, const char *root, int TRIGMode, int close_log,
+              connection_pool *connPool);
     //返回 false 表示该连接应当关闭，释放动作交给调用方的唯一出口
     bool process();
     bool read_once();
@@ -173,6 +174,11 @@ public:
     int m_state; //读为0, 写为1
 
 private:
+    //登录与注册要从连接池取一个连接。连接池由服务器在启动期建好、生命周期覆盖
+    //全部请求，因此这里只持有一个不具所有权的指针。给默认值是为了未走 init 的
+    //路径也不会读到未初始化的取值
+    connection_pool *m_connPool = nullptr;
+
     int m_sockfd;
     sockaddr_in m_address;
     std::vector<char> m_read_buf;
