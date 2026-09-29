@@ -114,7 +114,7 @@ Linux 下 C++ 轻量级 Web 服务器，并发模型为**主从 Reactor（one lo
 | **2** | **50270** | **1.96** | **2.75** |
 | 4 | 37705 | 2.50 | 8.22 |
 
-测试机的 4 个 vCPU 实为 2 物理核 + 超线程，且 wrk 与服务端同机，因此 2 个子线程即已占满可用并行度，更多线程反而带来调度开销。完整的环境说明与数据见 [docs/changes/029-uninit-mapping-crash.md](docs/changes/029-uninit-mapping-crash.md)；重构前的基线见 [docs/changes/021-baseline-after-fixes.md](docs/changes/021-baseline-after-fixes.md)。
+测试机的 4 个 vCPU 实为 2 物理核 + 超线程，且 wrk 与服务端同机，因此 2 个子线程即已占满可用并行度，更多线程反而带来调度开销。完整的环境说明与数据见 [docs/changes/029-uninit-mapping-crash.md](docs/changes/029-uninit-mapping-crash.md)；重构前的基线见 [docs/changes/021-baseline-after-fixes.md](docs/changes/021-baseline-after-fixes.md)；与重构前基线在同一时段做的对照见 [docs/changes/031-baseline-comparison.md](docs/changes/031-baseline-comparison.md)。
 
 压测脚本见 [test_pressure/bench.sh](test_pressure/bench.sh)。
 
