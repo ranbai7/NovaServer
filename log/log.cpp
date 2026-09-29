@@ -47,9 +47,14 @@ bool Log::init(const char *file_name, int close_log, int log_buf_size, int split
     memset(m_buf, '\0', m_log_buf_size);
     m_split_lines = split_lines;
 
+    //时区状态是进程级的全局数据，首次取本地时间会触发一次初始化（tzset），
+    //而那一步不是线程安全的。init 在启动阶段由单线程调用，先在这里预热一次，
+    //此后各子 Reactor 线程并发取时间就只剩读操作
+    tzset();
+
     time_t t = time(NULL);
-    struct tm *sys_tm = localtime(&t);
-    struct tm my_tm = *sys_tm;
+    struct tm my_tm = {};
+    localtime_r(&t, &my_tm);
 
     const char *p = strrchr(file_name, '/');
     char log_full_name[512] = {0};
@@ -90,15 +95,14 @@ bool Log::init(const char *file_name, int close_log, int log_buf_size, int split
 
 void Log::write_log(int level, const char *format, ...)
 {
-    //init 失败时文件指针为空。日志是辅助设施，此时应静默丢弃而不是影响主流程
-    if (m_fp == nullptr)
-        return;
-
     struct timeval now = {0, 0};
     gettimeofday(&now, NULL);
     time_t t = now.tv_sec;
-    struct tm *sys_tm = localtime(&t);
-    struct tm my_tm = *sys_tm;
+    //localtime 返回指向进程内静态缓冲区的指针，而写日志会被多个子 Reactor 线程
+    //并发调用，它们会同时读写那份静态数据；改用可重入的 localtime_r，
+    //结果写入调用方自己的 tm
+    struct tm my_tm = {};
+    localtime_r(&t, &my_tm);
     char s[16] = {0};
     switch (level)
     {
@@ -120,6 +124,16 @@ void Log::write_log(int level, const char *format, ...)
     }
     //写入一个log，对m_count++, m_split_lines最大行数
     m_mutex.lock();
+
+    //init 失败时文件指针为空。日志是辅助设施，此时应静默丢弃而不是影响主流程。
+    //这个判断必须在锁内：m_fp 会被下面的日志轮转改写（fclose 之后 fopen 之前
+    //它还一度是悬垂的），放在锁外读会与那一步构成数据竞争
+    if (m_fp == nullptr)
+    {
+        m_mutex.unlock();
+        return;
+    }
+
     m_count++;
 
     if (m_today != my_tm.tm_mday || m_count % m_split_lines == 0) //everyday log

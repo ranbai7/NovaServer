@@ -93,6 +93,18 @@ public:
         //缺省时退化为「什么也不做」，而不是在调用点抛 bad_function_call
         m_want_read = [] {};
         m_want_write = [] {};
+
+        //指向读缓冲与文件映射的成员必须先置空。reset() 的第一步是 unmap()，
+        //它要读 m_file_address 判断有没有映射待释放；而连接对象是复用堆内存的，
+        //make_shared 拿到的块会残留上一个连接的取值——那个地址对应的映射早已被
+        //释放，再次 munmap 就会解除掉别人的映射（堆或其他 mmap），
+        //表现为无从解释的堆破坏，且与崩溃点相隔甚远
+        m_url = nullptr;
+        m_version = nullptr;
+        m_host = nullptr;
+        m_string = nullptr;
+        m_file_address = nullptr;
+        m_file_stat = {};
     }
     ~http_conn() {}
 

@@ -25,7 +25,14 @@ WebServer::WebServer()
 
 WebServer::~WebServer()
 {
-    //先释放监听与信号，再释放事件循环：后两者的析构都要访问循环
+    //线程池必须最先停。它会 join 所有子线程，而子线程可能仍在处理连接——
+    //那些连接的协议对象持有 m_root（作为 doc_root），要等它们全部退出之后
+    //才能释放。析构函数体先于成员析构执行，若不在这里显式停掉，
+    //free(m_root) 就会跑在 m_thread_pool 析构之前，与还在读 m_root 的子线程
+    //构成数据竞争
+    m_thread_pool.reset();
+
+    //随后释放监听与信号，最后释放事件循环：后两者的析构都要访问循环
     m_acceptor.reset();
     m_signals.reset();
     m_loop.reset();
