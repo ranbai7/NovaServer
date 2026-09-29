@@ -29,7 +29,6 @@ function(add_unit_test name)
 endfunction()
 
 add_unit_test(unit_tests
-    test_block_queue.cpp
     test_locker.cpp
 )
 
@@ -37,6 +36,12 @@ add_unit_test(log_tests
     test_log.cpp
     ${CMAKE_SOURCE_DIR}/log/log.cpp
 )
+
+# 日志测试依赖排空完成的握手，而握手一旦失效的表现是「测试永远不结束」——
+# 即挂住而不是断言失败。加超时把这种情况变成一次明确的失败。
+# 取值放得比其它测试宽：本组含并发与大批量写入，在 Sanitizer 下会慢一个数量级，
+# 而超时要抓的是死锁（无限等待），不是慢
+set_tests_properties(log_tests PROPERTIES TIMEOUT 120)
 
 # URL 编解码与路径规范化为纯函数，无需链接额外源文件
 add_unit_test(url_codec_tests

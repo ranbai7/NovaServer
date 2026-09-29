@@ -38,6 +38,13 @@ WebServer::~WebServer()
     m_loop.reset();
 
     free(m_root);
+
+    //最后排空日志。异步写入下日志按缓冲块批量落盘，此处之前写下的内容还在内存里；
+    //放在所有组件析构之后，是为了把销毁过程本身产生的日志也一并落盘。
+    //
+    //不依赖 Log 单例的析构函数：它是函数内的 static，其析构排在退出阶段的静态析构
+    //序列里，顺序不确定，可能晚于其它同样会写日志的静态对象
+    Log::get_instance()->flush();
 }
 
 void WebServer::init(const Config &config)
@@ -55,7 +62,8 @@ void WebServer::init(const Config &config)
     m_log_file = config.log_file;
     m_log_buf_size = config.log_buf_size;
     m_log_split_lines = config.log_split_lines;
-    m_log_queue_size = config.log_queue_size;
+    m_log_batch_buf_size = config.log_batch_buf_size;
+    m_log_flush_interval = config.log_flush_interval;
 
     m_db_host = config.db_host;
     m_db_port = config.db_port;
@@ -144,12 +152,47 @@ void WebServer::log_write()
         exit(EXIT_FAILURE);
     }
 
-    //路径形如「目录/文件名」：Log::init 会把最后一个 '/' 之前的部分作为目录、
-    //之后的部分作为文件名，并在文件名前追加日期
-    const std::string path = m_log_dir + "/" + m_log_file;
-    const int queue_size = (1 == m_log_write) ? m_log_queue_size : 0;
+    //写入方式：0 = 同步（每行直接落盘），1 = 异步（缓冲池批量落盘）
+    if (m_log_write != 0 && m_log_write != 1)
+    {
+        std::fprintf(stderr, "日志写入方式非法: %d（0 = 同步，1 = 异步）\n", m_log_write);
+        exit(EXIT_FAILURE);
+    }
 
-    if (!Log::get_instance()->init(path.c_str(), m_close_log, m_log_buf_size, m_log_split_lines, queue_size))
+    //日志的这几项取值直接参与缓冲区下标计算，越界取值会让日志子系统在「看起来
+    //一切正常」的情况下出错（例如单行上限小于时间前缀的长度时会写越界）。
+    //与触发模式、线程数一样，在启动阶段一次性拦下，而不是留给 Log 内部去夹取
+    const auto check_range = [](const char *name, int value, int lo, int hi)
+    {
+        if (value < lo || value > hi)
+        {
+            std::fprintf(stderr, "%s 取值非法: %d（有效范围 %d..%d）\n", name, value, lo, hi);
+            exit(EXIT_FAILURE);
+        }
+    };
+    check_range("日志单行上限 buf_size", m_log_buf_size, Log::MIN_LINE_BUF, Log::MAX_LINE_BUF);
+    check_range("日志缓冲块大小 batch_buf_size", m_log_batch_buf_size, Log::MIN_BATCH_BUF_SIZE,
+                Log::MAX_BATCH_BUF_SIZE);
+    check_range("日志刷新间隔 flush_interval", m_log_flush_interval, Log::MIN_FLUSH_INTERVAL_MS,
+                Log::MAX_FLUSH_INTERVAL_MS);
+    if (m_log_split_lines < 1)
+    {
+        std::fprintf(stderr, "日志文件行数上限非法: %d（须不小于 1）\n", m_log_split_lines);
+        exit(EXIT_FAILURE);
+    }
+
+    LogConfig config;
+    config.dir = m_log_dir;
+    config.file = m_log_file;
+    config.close_log = m_close_log;
+    config.write_mode = m_log_write;
+    config.log_buf_size = m_log_buf_size;
+    config.split_lines = m_log_split_lines;
+    config.batch_buf_size = m_log_batch_buf_size;
+    config.flush_interval_ms = m_log_flush_interval;
+
+    const std::string path = m_log_dir + "/" + m_log_file;
+    if (!Log::get_instance()->init(config))
     {
         //日志文件打开失败时改为关闭日志：否则后续写日志会作用于空文件指针
         std::fprintf(stderr, "日志文件 %s 打开失败，已关闭日志\n", path.c_str());

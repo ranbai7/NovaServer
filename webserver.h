@@ -52,7 +52,8 @@ private:
     std::string m_log_file;
     int m_log_buf_size;
     int m_log_split_lines;
-    int m_log_queue_size;
+    int m_log_batch_buf_size;
+    int m_log_flush_interval;
 
     std::string m_db_host;
     int m_db_port;

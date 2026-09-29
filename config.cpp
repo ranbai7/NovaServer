@@ -83,12 +83,13 @@ Config::Config()
     sql_num = 8;
 
     // ---- 日志 ----
-    LOGWrite = 0; //同步写入
+    LOGWrite = 1; //异步写入：缓冲池批量落盘
     log_dir = "./ServerLog";
     log_file = "server";
     log_buf_size = 2000;
     log_split_lines = 800000;
-    log_queue_size = 800;
+    log_batch_buf_size = 65536;
+    log_flush_interval = 1000;
 
     // ---- 配置文件 ----
     config_file = "./config.ini";
@@ -194,7 +195,8 @@ bool Config::apply(std::map<std::string, std::string> &items, std::string &error
     str_item("log", "file", log_file);
     int_item("log", "buf_size", log_buf_size);
     int_item("log", "split_lines", log_split_lines);
-    int_item("log", "queue_size", log_queue_size);
+    int_item("log", "batch_buf_size", log_batch_buf_size);
+    int_item("log", "flush_interval", log_flush_interval);
 
     if (!message.empty())
     {

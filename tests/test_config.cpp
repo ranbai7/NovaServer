@@ -89,7 +89,8 @@ dir = ./logs
 file = app
 buf_size = 4096
 split_lines = 100
-queue_size = 64
+batch_buf_size = 131072
+flush_interval = 250
 )",
             config);
 
@@ -107,7 +108,15 @@ queue_size = 64
     EXPECT_EQ(config.log_file, "app");
     EXPECT_EQ(config.log_buf_size, 4096);
     EXPECT_EQ(config.log_split_lines, 100);
-    EXPECT_EQ(config.log_queue_size, 64);
+    EXPECT_EQ(config.log_batch_buf_size, 131072);
+    EXPECT_EQ(config.log_flush_interval, 250);
+}
+
+// queue_size 随日志改造被 batch_buf_size / flush_interval 取代。配置文件里还留着
+// 这个键时应当启动失败，而不是静默忽略——否则使用者会以为异步队列的长度仍然生效
+TEST_F(ConfigTest, RejectsRemovedQueueSizeKey)
+{
+    load_fail("[log]\nqueue_size = 800\n", "queue_size");
 }
 
 TEST_F(ConfigTest, KeepsDefaultsForAbsentKeys)

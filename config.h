@@ -55,7 +55,8 @@ public:
     std::string log_file;
     int log_buf_size;
     int log_split_lines;
-    int log_queue_size;
+    int log_batch_buf_size;
+    int log_flush_interval;
 
     // ---- 配置文件本身 ----
     std::string config_file;   //-f 指定的路径

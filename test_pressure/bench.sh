@@ -14,6 +14,9 @@
 #   WRK=wrk          压测工具路径
 #   URL_PATH=/judge.html   压测路径
 #   RESULT_DIR=...   结果输出目录
+#   SERVER_ARGS=...  追加给服务端的参数，默认 -c 1（关闭日志）。
+#                    测量日志路径的开销时用 SERVER_ARGS="-c 0 -l 0" 一类取值打开日志
+#   COMBOS="0 2;0 8" 覆盖被测的「触发模式 线程数」组合，以分号分隔；默认跑全部组合
 #
 set -u
 
@@ -32,16 +35,24 @@ RESULT_DIR="${RESULT_DIR:-$REPO_ROOT/test_pressure/results}"
 mkdir -p "$RESULT_DIR"
 RAW_FILE="$RESULT_DIR/raw_$(date +%Y%m%d_%H%M%S).txt"
 
+# 追加给服务端的参数。默认关闭日志，使吞吐不受日志路径影响；
+# 要测量日志本身的代价，把它改成 "-c 0 -l 0"（同步）或 "-c 0 -l 1"（异步）
+SERVER_ARGS="${SERVER_ARGS:--c 1}"
+
 # 参数组合: "<触发模式> <子 Reactor 线程数>"，对应 ./server -m -t
-COMBOS=(
-  "0 8"
-  "1 8"
-  "2 8"
-  "3 8"
-  "0 1"
-  "0 2"
-  "0 4"
-)
+if [ -n "${COMBOS:-}" ]; then
+  IFS=';' read -r -a COMBO_LIST <<< "$COMBOS"
+else
+  COMBO_LIST=(
+    "0 8"
+    "1 8"
+    "2 8"
+    "3 8"
+    "0 1"
+    "0 2"
+    "0 4"
+  )
+fi
 
 SUMMARY=()
 SERVER_PID=""
@@ -79,7 +90,8 @@ environment_info() {
 }
 
 start_server() {
-  (cd "$REPO_ROOT" && exec ./server -p "$PORT" -m "$1" -t "$2" -c 1) >/dev/null 2>&1 &
+  # shellcheck disable=SC2086
+  (cd "$REPO_ROOT" && exec ./server -p "$PORT" -m "$1" -t "$2" $SERVER_ARGS) >/dev/null 2>&1 &
   SERVER_PID=$!
   for _ in $(seq 1 50); do
     if ss -lnt 2>/dev/null | grep -q ":${PORT} "; then return 0; fi
@@ -138,7 +150,7 @@ run_group() {
 main() {
   environment_info
 
-  for combo in "${COMBOS[@]}"; do
+  for combo in "${COMBO_LIST[@]}"; do
     # shellcheck disable=SC2086
     run_group $combo
   done
