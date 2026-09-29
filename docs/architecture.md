@@ -109,8 +109,8 @@
 | 连接对象 | 按 `MAX_FD` 预分配 | 按需 `make_shared` |
 | 唤醒 | 自管道 | `eventfd` |
 
-## 七、已知缺陷
+## 七、并发正确性
 
-**短连接高频施压下服务端会崩溃**：以 `wrk -c100 -H "Connection: close"` 施压（每秒约 2 万条连接建立/关闭），服务端稳定段错误，`-t 1` 与 `-t 2` 下几乎必现。已通过二分法将范围收缩到 `do_request` 内的一小段，但尚未定位到根因。
+本模型在 ThreadSanitizer 下经过三组场景验证：连接的建立/关闭风暴、空闲超时与主动关闭同时发生、日志的跨线程写入。单元测试（其中 `event_loop_tests` 与 `timer_queue_tests` 会真的跑起事件循环、跨线程投递任务）在 TSan 下无数据竞争报告。
 
-长连接负载与功能验证不受影响。完整的复现命令、二分数据与已排除项见 [changes/027-short-connection-crash.md](changes/027-short-connection-crash.md)。
+验证过程中发现并修复了三处问题，都与「跨线程或对象复用」有关：`http_conn` 构造函数未初始化文件映射指针，导致复用的连接对陈旧地址反复 `munmap`；日志依赖非线程安全的 `localtime`；`m_fp` 的判空位于锁外。详见 [changes/029-uninit-mapping-crash.md](changes/029-uninit-mapping-crash.md)。

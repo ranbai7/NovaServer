@@ -109,16 +109,14 @@ Linux 下 C++ 轻量级 Web 服务器，并发模型为**主从 Reactor（one lo
 
 | `-t` | QPS | P50 (ms) | P99 (ms) |
 |--:|--:|--:|--:|
-| 0（单循环，对照） | 25315 | 3.59 | 46.73 |
-| 1 | 27141 | 3.53 | 7.18 |
-| **2** | **45918** | **2.10** | **3.41** |
-| 4 | 32739 | 2.89 | 9.02 |
+| 0（单循环，对照） | 29825 | 3.31 | 4.82 |
+| 1 | 27868 | 3.34 | 16.12 |
+| **2** | **50270** | **1.96** | **2.75** |
+| 4 | 37705 | 2.50 | 8.22 |
 
-测试机的 4 个 vCPU 实为 2 物理核 + 超线程，且 wrk 与服务端同机，因此 2 个子线程即已占满可用并行度，更多线程反而带来调度开销。完整的环境说明与数据见 [docs/changes/027-short-connection-crash.md](docs/changes/027-short-connection-crash.md)；重构前的基线见 [docs/changes/021-baseline-after-fixes.md](docs/changes/021-baseline-after-fixes.md)。
+测试机的 4 个 vCPU 实为 2 物理核 + 超线程，且 wrk 与服务端同机，因此 2 个子线程即已占满可用并行度，更多线程反而带来调度开销。完整的环境说明与数据见 [docs/changes/029-uninit-mapping-crash.md](docs/changes/029-uninit-mapping-crash.md)；重构前的基线见 [docs/changes/021-baseline-after-fixes.md](docs/changes/021-baseline-after-fixes.md)。
 
 压测脚本见 [test_pressure/bench.sh](test_pressure/bench.sh)。
-
-> **已知缺陷**：短连接（每个请求新建连接）高频施压下服务端会崩溃，尚未定位到根因，详见 `027`。长连接与功能验证不受影响。
 
 
 快速运行
