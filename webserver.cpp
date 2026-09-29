@@ -211,10 +211,9 @@ void WebServer::sql_pool()
 
 void WebServer::run()
 {
-    //信号必须在创建任何线程之前屏蔽。当前只有主线程，但这道约束要写在
-    //它将来仍然成立的位置上——线程池一旦建立，晚屏蔽就无效了
-    if (!SignalWatcher::block_signals({SIGTERM, SIGINT}))
-        std::fprintf(stderr, "屏蔽退出信号失败: %s\n", strerror(errno));
+    //退出信号的屏蔽已在 main() 开头完成——它必须早于**任何**线程的创建，
+    //而日志的写盘线程在这里之前就建好了，因此那一步不能留在这里。
+    //此处只负责把信号接到事件循环上
 
     //SIGPIPE 仍按忽略处理：客户端提前断开时写操作会收到它，
     //而写失败已经在返回值里体现了，不需要让进程收到信号
@@ -223,8 +222,6 @@ void WebServer::run()
     m_signals.reset(new SignalWatcher(m_loop.get(), {SIGTERM, SIGINT}));
     m_signals->set_callback([this](int) { m_loop->quit(); });
 
-    //线程池在建线程之前启动信号接管：信号掩码是线程属性，子线程会继承
-    //创建时的掩码，晚屏蔽就无效了
     m_thread_pool->start();
     m_acceptor->start();
     m_loop->loop();
