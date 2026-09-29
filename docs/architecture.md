@@ -31,6 +31,11 @@
 
 `-t 0` 是合法的退化配置：不创建子线程，全部连接归主循环，用于与多线程分发做对照。
 
+在此之外还有一个**不属于事件循环的线程**：异步日志的写盘线程。它不参与 IO，
+只按缓冲块的写满或定时到点把日志成块落盘。它与各 Reactor 线程之间只共享日志的
+缓冲池，临界区是一次 `memcpy`，且只在换块时被唤醒——因此进程的线程数是
+「主 + N 个子 Reactor + 1 个写盘」。详见 [log/README.md](../log/README.md)。
+
 ## 二、模块结构
 
 | 模块 | 文件 | 职责 |
@@ -44,6 +49,7 @@
 | `SignalWatcher` | `net/signal_watcher.{h,cpp}` | 以 signalfd 接管退出信号，屏蔽信号处理函数 |
 | `WebServer` | `webserver.{h,cpp}` | 服务器主类：装配上述组件，承担 `on_new_connection` 与 `on_connection_closed` |
 | `http_conn` | `http/http_conn.{h,cpp}` | HTTP 状态机解析与响应组装（不感知事件循环） |
+| `Log` | `log/log.{h,cpp}` | 单例日志：缓冲池批量落盘、按日期与行数轮转、同步/异步两种写入方式 |
 | `Config` | `config.{h,cpp}` | 三层配置来源：内置默认值 < 配置文件 < 命令行 |
 
 ## 三、事件源的统一
@@ -114,3 +120,8 @@
 本模型在 ThreadSanitizer 下经过三组场景验证：连接的建立/关闭风暴、空闲超时与主动关闭同时发生、日志的跨线程写入。单元测试（其中 `event_loop_tests` 与 `timer_queue_tests` 会真的跑起事件循环、跨线程投递任务）在 TSan 下无数据竞争报告。
 
 验证过程中发现并修复了三处问题，都与「跨线程或对象复用」有关：`http_conn` 构造函数未初始化文件映射指针，导致复用的连接对陈旧地址反复 `munmap`；日志依赖非线程安全的 `localtime`；`m_fp` 的判空位于锁外。详见 [changes/029-uninit-mapping-crash.md](changes/029-uninit-mapping-crash.md)。
+
+**一处工具限制**：写盘线程的定时等待（`std::condition_variable::wait_for`）在本工具链上会让
+ThreadSanitizer 记错互斥量的持有状态，从而把该互斥量保护下的访问全部报成数据竞争。
+把这一处换成不带超时的等待后报告即归零，而实现不变，据此确认是误报。因此日志模块的
+TSan 报告需要按此判据甄别，详见 [changes/030-log-double-buffer.md](changes/030-log-double-buffer.md) 第五节。
