@@ -23,8 +23,7 @@ bool SignalWatcher::block_signals(std::initializer_list<int> signals)
 {
     const sigset_t mask = make_mask(signals);
 
-    //pthread_sigmask 只作用于调用线程，因此这里依赖「调用者尚未创建线程」
-    //这一时序约定；若已有子线程存在，它们不会继承新的掩码
+    //pthread_sigmask 只作用于调用线程，故依赖「调用者尚未创建线程」这一时序约定；已有子线程不会继承新掩码
     return 0 == pthread_sigmask(SIG_BLOCK, &mask, nullptr);
 }
 

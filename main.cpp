@@ -11,11 +11,9 @@
 
 int main(int argc, char *argv[])
 {
-    //退出信号必须在创建**任何**线程之前屏蔽：信号掩码是线程属性，子线程继承的是
-    //创建它那一刻的掩码。日志的写盘线程（异步写入，默认开启）在 WebServer 的
-    //log_write() 里就建好了，早于 run()，因此这一步只能放在这里——留在 run() 里
-    //会让写盘线程带着未屏蔽的掩码，SIGTERM 被投递给它时按默认动作终止进程，
-    //表现是退出码 143 而不是优雅退出的 0
+    //退出信号必须在创建任何线程之前屏蔽：信号掩码是线程属性，子线程继承创建它那刻的掩码。
+    //日志的写盘线程（异步写入，默认开启）在 log_write() 里就建好了、早于 run()，留在 run()
+    //会让它带着未屏蔽的掩码，SIGTERM 投给它时按默认动作终止进程，退出码是 143 而非优雅退出的 0
     if (!SignalWatcher::block_signals({SIGTERM, SIGINT}))
         std::fprintf(stderr, "屏蔽退出信号失败: %s\n", strerror(errno));
 
@@ -49,13 +47,10 @@ int main(int argc, char *argv[])
     //初始化：解析配置与站点根目录
     server.init(config);
 
-    //日志
     server.log_write();
 
-    //数据库
     server.sql_pool();
 
-    //建立监听并进入事件循环，直到收到退出信号
     server.run();
 
     return 0;

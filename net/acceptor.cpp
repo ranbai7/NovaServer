@@ -42,7 +42,6 @@ void Acceptor::start()
         std::exit(EXIT_FAILURE);
     }
 
-    //优雅关闭连接
     if (0 == m_opt_linger)
     {
         struct linger tmp = {0, 1};
@@ -69,8 +68,7 @@ void Acceptor::start()
         std::exit(EXIT_FAILURE);
     }
 
-    //backlog 取 512（内核会自行截断到 net.core.somaxconn）。此前的 5 太小：
-    //突发建立连接时 accept 队列溢出，溢出的连接要等客户端重传 SYN 才能建立
+    //backlog 取 512（内核会自行截断到 net.core.somaxconn）。此前的 5 太小：突发建立连接时队列溢出，溢出的连接要等客户端重传 SYN
     if (listen(m_listenfd, kListenBacklog) < 0)
     {
         LOG_ERROR("listen failed");
@@ -110,8 +108,7 @@ void Acceptor::handle_read()
         if (EAGAIN == errno || EWOULDBLOCK == errno)
             break; //待处理的连接已取完，是 ET 循环的正常出口
 
-        //被信号打断，或该连接在 accept 之前已被对端中止。两种情况下队列里都
-        //可能还有连接，而 ET 不会再通知，因此必须重试
+        //被信号打断或连接在 accept 前已被对端中止：队列里可能还有连接而 ET 不再通知，必须重试
         if (EINTR == errno || ECONNABORTED == errno)
             continue;
 
@@ -134,10 +131,8 @@ void Acceptor::accept_one(int connfd, const sockaddr_in &peer)
 
 void Acceptor::handle_fd_exhausted()
 {
-    //描述符耗尽时 accept 会以 EMFILE 失败，而 ET 下这个错误不会再触发下一次
-    //事件——服务将永久失去接受连接的能力。这里先关掉预留的空闲描述符，
-    //accept 一个连接（此时必然成功）后立刻关闭它，再把空闲描述符占回来：
-    //用一次「建立即关闭」换取接受能力的持续存在
+    //描述符耗尽时 accept 以 EMFILE 失败，而 ET 下它不会再触发下一次事件，服务将永久失去接受能力：
+    //先关掉预留的空闲描述符，accept 一个连接（此时必然成功）后立刻关闭，再把空闲描述符占回来
     if (m_idle_fd >= 0)
     {
         close(m_idle_fd);

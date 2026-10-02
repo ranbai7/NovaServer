@@ -17,8 +17,7 @@
 //现在是「同时在线的连接数上限」——连接对象已按需创建
 const long MAX_CONNECTION = 65536;
 
-//空闲连接的回收时间。沿用旧实现里 3 × TIMESLOT（5 秒）的取值，
-//使超时行为与改造前一致
+//空闲连接回收时间，沿用旧实现 3 × TIMESLOT（5 秒）的取值，使超时行为与改造前一致
 const int IDLE_TIMEOUT_MS = 15 * 1000;
 
 //服务器主类。持有主事件循环、监听器与信号接管，负责把新连接交给事件循环
@@ -63,9 +62,8 @@ private:
     int m_sql_num;
 
     // ---- 运行期 ----
-    //成员的析构按声明顺序的逆序进行，而这里的顺序是有意的：
-    //线程池最先析构（它会 join 所有子线程，子循环与连接随之结束），
-    //然后是监听与信号，最后才是主循环——它们都要访问主循环
+    //成员按声明顺序逆序析构，而这里的顺序是有意的：线程池最先（join 所有子线程，子循环
+    //与连接随之结束），然后监听与信号，最后主循环——后三者都要访问主循环
     std::unique_ptr<EventLoop> m_loop;
     std::unique_ptr<SignalWatcher> m_signals;
     std::unique_ptr<Acceptor> m_acceptor;

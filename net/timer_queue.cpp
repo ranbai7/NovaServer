@@ -89,8 +89,7 @@ void TimerQueue::handle_read()
 
     const auto now = std::chrono::steady_clock::now();
 
-    //先把到期项摘出来，再执行回调：回调里可能取消或顺延同一个定时器
-    //（连接因空闲超时关闭时会取消自己），不先摘就会二次执行
+    //先把到期项摘出来再执行回调：回调里可能取消或顺延同一个定时器（连接因空闲超时关闭时会取消自己），不先摘就会二次执行
     std::vector<TimerCallback> due;
     for (auto it = m_entries.begin(); it != m_entries.end();)
     {
@@ -105,7 +104,7 @@ void TimerQueue::handle_read()
         }
     }
 
-    //timerfd 已到期，装载状态随之作废，需要按剩余定时器重新装载
+    //timerfd 已到期，装载状态随之作废，需按剩余定时器重新装载
     m_armed = kNever;
     rearm();
 
@@ -117,9 +116,7 @@ void TimerQueue::rearm()
 {
     const auto earliest = earliest_of(m_entries);
 
-    //装载时刻没有变化就不发起系统调用。这条判断不是可有可无的优化：
-    //空闲超时在每次读写后都会 refresh，而 refresh 出来的到期时刻总是最晚的，
-    //改不到最早时刻，因此绝大多数 refresh 都不该产生 timerfd_settime
+    //装载时刻没变化就不发起系统调用；这不是可有可无的优化：空闲超时每次读写后都 refresh，而 refresh 出的到期时刻总是最晚、改不到最早，故绝大多数 refresh 都不该产生 timerfd_settime
     if (earliest == m_armed)
         return;
 

@@ -17,7 +17,6 @@ const char kAlgorithm[] = "pbkdf2_sha256";
 //迭代次数的合理上界：防止被篡改的记录让校验陷入长时间计算
 const long kMaxIterations = 10000000;
 
-//base64 编码
 std::string base64_encode(const unsigned char *data, size_t len)
 {
     std::string out(4 * ((len + 2) / 3) + 1, '\0');
@@ -43,7 +42,7 @@ bool base64_decode(const std::string &text, std::string &out)
     if (written < 0)
         return false;
 
-    //解码结果按 4 字节对齐，填充字符也被计入长度，需要逐个减掉
+    //解码结果按 4 字节对齐，填充字符也计入长度，逐个减掉
     size_t length = static_cast<size_t>(written);
     for (size_t i = text.size(); i > 0 && text[i - 1] == '='; --i)
         --length;

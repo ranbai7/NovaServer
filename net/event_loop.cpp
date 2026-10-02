@@ -8,8 +8,7 @@
 
 EventLoop::EventLoop() : m_epollfd(-1), m_wakeupfd(-1), m_quitting(false), m_thread_id(std::this_thread::get_id())
 {
-    //两组描述符都带 CLOEXEC：本服务端不 fork 子进程处理请求，
-    //但把「不泄漏给 exec」作为默认更稳妥
+    //两组描述符都带 CLOEXEC：本服务端不 fork 子进程处理请求，但把「不泄漏给 exec」作为默认更稳妥
     m_epollfd = epoll_create1(EPOLL_CLOEXEC);
     if (m_epollfd < 0)
     {
@@ -17,8 +16,7 @@ EventLoop::EventLoop() : m_epollfd(-1), m_wakeupfd(-1), m_quitting(false), m_thr
         std::exit(EXIT_FAILURE);
     }
 
-    //唤醒用的是 eventfd 而不是自管道：它是单描述符、固定 8 字节计数的，
-    //读写语义比管道简单，也不必为此维护两个 fd
+    //唤醒用 eventfd 而不是自管道：单描述符、固定 8 字节计数，读写语义比管道简单，也不必维护两个 fd
     m_wakeupfd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     if (m_wakeupfd < 0)
     {
@@ -38,9 +36,7 @@ EventLoop::EventLoop() : m_epollfd(-1), m_wakeupfd(-1), m_quitting(false), m_thr
 
 EventLoop::~EventLoop()
 {
-    //顺序有依赖：先清待执行任务与连接注册表——两者都可能持有连接的最后一份
-    //引用，而连接的析构要访问定时器队列，因此它们必须排在定时器队列之前。
-    //唤醒通道则要在关闭 eventfd 之前摘除
+    //顺序有依赖：先清待执行任务与连接注册表（两者都可能持有连接最后一份引用，而连接析构要访问定时器队列），故须排在定时器队列之前；唤醒通道须在关 eventfd 前摘除
     m_pending_functors.clear();
     m_connections.clear();
     m_timer_queue.reset();
@@ -57,8 +53,7 @@ EventLoop::~EventLoop()
 
 void EventLoop::loop()
 {
-    //不在这里重置 m_quitting：循环启动之前调用 quit() 是合法的，
-    //重置会把那次请求丢掉
+    //不在这里重置 m_quitting：循环启动之前调用 quit() 是合法的，重置会把那次请求丢掉
     while (!m_quitting)
     {
         const int count = epoll_wait(m_epollfd, m_events.data(), static_cast<int>(m_events.size()), -1);
@@ -87,8 +82,7 @@ void EventLoop::quit()
 {
     m_quitting = true;
 
-    //可能正阻塞在 epoll_wait 上，必须叫醒它才能让循环看到退出标志。
-    //本线程调用时亦然：唤醒事件会被本次或下一次循环取走，代价只是一次空转
+    //可能正阻塞在 epoll_wait 上，必须叫醒它才能让循环看到退出标志；本线程调用时亦然（唤醒事件会被本次或下次循环取走，代价一次空转）
     if (!is_in_loop_thread())
         wakeup();
 }
@@ -108,8 +102,7 @@ void EventLoop::queue_in_loop(Functor cb)
         m_pending_functors.push_back(std::move(cb));
     }
 
-    //无条件唤醒：任务可能是在某次 epoll_wait 返回之后、进入下一轮之前投递的，
-    //不唤醒就要等到下一个事件才有机会执行
+    //无条件唤醒：任务可能在 epoll_wait 返回之后、进入下一轮之前投递，不唤醒就要等下一个事件才执行
     wakeup();
 }
 
@@ -134,8 +127,7 @@ void EventLoop::handle_wakeup()
 
 void EventLoop::do_pending_functors()
 {
-    //先在锁内整块换出，再在锁外执行：任务本身可能再次调用 queue_in_loop，
-    //持锁执行会自锁
+    //先在锁内整块换出，再在锁外执行：任务本身可能再次调用 queue_in_loop，持锁执行会自锁
     std::vector<Functor> functors;
     {
         std::lock_guard<std::mutex> guard(m_mutex);
@@ -167,8 +159,7 @@ void EventLoop::remove_channel(Channel *channel)
     if (!channel->in_epoll())
         return;
 
-    //EPOLL_CTL_DEL 的第四个参数在 2.6.9 之后可以传 NULL，此处仍传一个合法指针
-    //以兼容更老的实现
+    //EPOLL_CTL_DEL 的第四参数在 2.6.9 之后可传 NULL，此处仍传合法指针以兼容更老的实现
     epoll_event event;
     event.data.ptr = channel;
     event.events = 0;
@@ -186,7 +177,6 @@ void EventLoop::add_connection(const std::shared_ptr<void> &conn)
 
 void EventLoop::remove_connection(const std::shared_ptr<void> &conn)
 {
-    //按值捕获、入队后再擦除：连接的关闭往往由它自己的回调触发，立刻擦除会让
-    //注册表持有的那份引用（也可能是最后一份）在回调栈内析构连接对象
+    //按值捕获、入队后再擦除：连接的关闭往往由它自己的回调触发，立刻擦除会让注册表持有的那份引用（也可能是最后一份）在回调栈内析构对象
     queue_in_loop([this, conn] { m_connections.erase(conn); });
 }
