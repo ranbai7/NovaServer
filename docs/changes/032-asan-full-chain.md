@@ -15,7 +15,7 @@
 
 ## 二、方法
 
-沿用仓库既有的 ASan 构建配置（`build-asan`：`RelWithDebInfo` + `-DENABLE_ASAN=ON`）：
+按 CMake 选项启用 ASan（生成目录 `build-asan`，`RelWithDebInfo` + `-DENABLE_ASAN=ON`）：
 
 ```bash
 cmake -B build-asan -DCMAKE_BUILD_TYPE=RelWithDebInfo -DENABLE_ASAN=ON
