@@ -199,6 +199,7 @@ sh ./build.sh
 
 | 文档 | 内容 |
 |:--|:--|
+| [docs/summary.md](docs/summary.md) | 优化笔记：按阶段叙述做了什么、为什么、怎么做、效果如何 |
 | [docs/architecture.md](docs/architecture.md) | 系统架构：并发模型、模块划分、连接归属约定、一次请求的事件流 |
 | [docs/performance.md](docs/performance.md) | 性能数据汇总：各阶段压测数据、优化前后对比与测量局限 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 优化路线图：分阶段目标、技术方案与逐项进度 |
