@@ -6,6 +6,9 @@
 # 并验证空闲连接会按预期被回收。用于改动后确认主链路未被破坏——
 # 压测脚本只看吞吐，功能是否还完整它答不了。
 #
+# 另含 `033` 全项目审核所修缺陷的回归用例（绝对形式 URI、管线化、启动参数校验），
+# 这几条修复此前只在当时手工验证过一次，纳入本脚本后才能防止复发。
+#
 # 用法:
 #   ./smoke.sh [端口]        默认 9006，需先把服务端跑在该端口上
 #
@@ -24,6 +27,9 @@ PORT="${1:-9006}"
 BASE="http://${HOST}:${PORT}"
 IDLE_WAIT="${IDLE_WAIT:-17}"
 SMOKE_DB="${SMOKE_DB:-1}"
+# 启动参数校验用例使用的端口。须给一个空闲端口，否则「越界参数未被拒绝」时
+# 服务端会因端口被占而退出，看起来像被拒绝了——那是假通过。
+REGRESS_PORT="${REGRESS_PORT:-9299}"
 
 PASS=0
 FAIL=0
@@ -86,6 +92,79 @@ GOT=$(curl -s "${BASE}/upload/novasmoke_$$.txt" 2>/dev/null)
 if grep -q "novaserver smoke payload" <<<"$GOT"; then ok "取回上传的文件内容一致"; else bad "取回的上传文件内容不符"; fi
 
 rm -rf "$TMP"
+
+echo "=== 缺陷回归（033 修复项）==="
+# A1（绝对形式 URI 且无路径 → 空指针解引用）与 A2（管线化请求被静默丢弃）都继承自原项目，
+# 且都曾造成可观测故障：前者一条请求即可打挂单进程服务端。两者都需要原始套接字——
+# curl 会把请求行规范化，测不出绝对形式；故用 python 直发。
+if python3 - "$HOST" "$PORT" <<'PY'
+import socket, sys
+
+host, port = sys.argv[1], int(sys.argv[2])
+
+def raw(payload, timeout=3.0):
+    s = socket.create_connection((host, port), timeout=timeout)
+    s.settimeout(timeout)
+    s.sendall(payload)
+    buf = b""
+    try:
+        while True:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+    except socket.timeout:
+        pass
+    s.close()
+    return buf
+
+def status(buf):
+    return buf.split(b"\r\n", 1)[0].decode(errors="replace")
+
+fails = 0
+
+def check(name, cond, detail):
+    global fails
+    print("  %s  %s — %s" % ("通过" if cond else "失败", name, detail))
+    if not cond:
+        fails += 1
+
+r = raw(b"GET http://example.com HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+check("绝对形式 URI 无路径", b"400" in r.split(b"\r\n")[0], status(r))
+
+r = raw(b"GET http://example.com/judge.html HTTP/1.1\r\nHost: example.com\r\n"
+        b"Connection: close\r\n\r\n")
+check("带路径的绝对形式仍正常", b"200" in r.split(b"\r\n")[0], status(r))
+
+r = raw(b"GET /judge.html HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+check("上述请求后服务端存活", b"200" in r.split(b"\r\n")[0], status(r))
+
+r = raw(b"GET /judge.html HTTP/1.1\r\nHost: x\r\n\r\n"
+        b"GET /judge.html HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+n = r.count(b"HTTP/1.1 200")
+check("管线化两个请求", n == 2, "收到 %d 个 200 响应" % n)
+
+sys.exit(1 if fails else 0)
+PY
+then ok "缺陷回归：绝对形式 URI 与管线化"; else bad "缺陷回归：绝对形式 URI 与管线化"; fi
+
+# 启动参数校验：越界值必须在绑定端口之前被拒绝。这些用例不依赖上面那个服务端，
+# 而是直接拉起二进制；若二进制不在预期位置则跳过。
+SERVER_BIN="$REPO_ROOT/server"
+if [ -x "$SERVER_BIN" ]; then
+  for spec in "连接数为 0:-p ${REGRESS_PORT} -s 0" "端口越界:-p 74542" "关闭方式越界:-p ${REGRESS_PORT} -o 5"; do
+    desc="${spec%%:*}"; args="${spec#*:}"
+    # RC=124 表示超时，即服务端没有被拒绝而是启动成功了——属失败
+    out=$(timeout 5 "$SERVER_BIN" $args 2>&1); rc=$?
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then
+      ok "启动参数校验：$desc 被拒绝（退出码 $rc）"
+    else
+      bad "启动参数校验：$desc 未被拒绝（退出码 $rc）"
+    fi
+  done
+else
+  echo "  已跳过启动参数校验（未找到可执行的 $SERVER_BIN）"
+fi
 
 echo "=== 空闲连接回收 ==="
 if python3 - "$HOST" "$PORT" "$IDLE_WAIT" <<'PY'
