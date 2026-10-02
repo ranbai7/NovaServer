@@ -106,4 +106,5 @@
 | `B_old_*.txt` / `B_new_*.txt` | B 组各组合的逐次输出与中位数 |
 | `对照表.txt` | 两组对照表 |
 
-该目录在 `.gitignore` 内，不入库。
+上述文件均已入库。`test_pressure/results/` 在 `.gitignore` 中被整体忽略以避免压测噪声，
+因此这些证据文件是用 `git add -f` 显式加入的。

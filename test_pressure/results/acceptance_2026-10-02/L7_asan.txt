@@ -1,0 +1,45 @@
+NovaServer 验收测试 — L7 · AddressSanitizer 全链路
+时间: 2026-10-02 15:06:45
+二进制: build-final-asan/server（Debug + -fsanitize=address，零告警）
+ASAN_OPTIONS: <默认，含 detect_leaks=1>
+
+=== 链路用例 ===
+  GET 静态页面 → 200 通过
+  GET 站点根 → 200 通过
+  GET 不存在 → 404 通过
+  GET URL 转义 → 200 通过
+  GET 路径穿越 → 400 通过
+  绝对URI无路径 → 000 失败
+  缺Host → 400 通过
+
+=== 注册 / 登录 ===
+  注册: 200
+  登录: 200
+  错口令: 200
+
+=== 上传闭环 ===
+  允许类型: 200
+  禁止类型: 415
+  上传列表: 200
+
+=== 并发请求（8 线程 × 200 次）===
+    200 200
+
+=== 优雅退出 ===
+  退出码: 0
+
+=== ASan 报告检查 ===
+  未发现 AddressSanitizer / LeakSanitizer 报告（含退出时泄漏检查）
+  stdout 行数: 0
+
+=== 补跑：绝对形式 URI 无路径（原始套接字，ASan 下）===
+  无路径绝对 URI: HTTP/1.1 400 Bad Request
+  带路径绝对 URI: HTTP/1.1 200 OK
+  之后存活探测: HTTP/1.1 200 OK
+  退出码: 127
+  补跑期间无 sanitizer 报告
+
+【注】上面「退出码: 127」是测试脚本自身的缺陷：该语句块被管道进 tee 而运行在子 shell 中，
+wait 对非本 shell 的子进程返回 127，与调试器/服务端无关。服务端的优雅退出以本文件
+首次运行（退出码 0）与 L6 的 8 组组合 + SIGINT（均为 0）为准。端口 9006 已确认释放，
+无 build-final-asan/server 进程残留。

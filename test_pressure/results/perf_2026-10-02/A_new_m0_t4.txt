@@ -1,0 +1,27 @@
+=== 测试环境 ===
+时间       : 2026-10-02 15:36:34
+主机       : ubuntu22-virtual-machine
+内核       : 6.8.0-138-generic
+虚拟化     : vmware
+CPU        : 型号名称：                               13th Gen Intel(R) Core(TM) i5-13500H
+CPU 核数   : 4
+内存总量   : 3.8Gi
+服务端     : 229880 bytes  10月 2 15:07
+wrk        : wrk debian/4.1.0-3build1 [epoll] Copyright (C) 2012 Will Glozer
+压测目标   : http://127.0.0.1:9006/judge.html
+压测参数   : -c100 -d5s (重复 5 次，wrk 2 线程)
+
+### -m 0 -t 4
+  第 1 次: QPS=30398  P50=2.73ms  P99=41.51ms
+  第 2 次: QPS=36815  P50=2.61ms  P99=7.40ms
+  第 3 次: QPS=36870  P50=2.56ms  P99=8.31ms
+  第 4 次: QPS=36552  P50=2.58ms  P99=8.00ms
+  第 5 次: QPS=37774  P50=2.54ms  P99=7.63ms
+  -- 中位数: QPS=36815.000  P50=2.580ms  P99=8.000ms  RSS=12.0MB
+
+=== 汇总（中位数）===
+| 触发模式 | 子 Reactor 线程数 | QPS | P50 (ms) | P99 (ms) | RSS (MB) |
+|:--:|--:|--:|--:|--:|--:|
+| 0 | 4 | 36815.000 | 2.580 | 8.000 | 12.0 |
+
+原始输出已保存至: /home/ubuntu22/Desktop/TinyWebServer/test_pressure/results/perf_2026-10-02/raw_A_new_m0_t4/raw_20261002_153634.txt

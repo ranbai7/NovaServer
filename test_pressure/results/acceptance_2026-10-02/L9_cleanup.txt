@@ -1,0 +1,26 @@
+NovaServer 验收测试 — 收尾清理
+时间: 2026-10-02 15:08:04
+
+--- 数据库：删除本次新建的测试用户 ---
+已删除: smoke_19839, asan_20600
+剩余 smoke_* 用户数: 7（前置为 7）
+剩余 asan_* 用户数: 0
+
+--- 上传目录：删除本次测试产生的文件 ---
+  已删除 'upload/novasmoke_19839.txt'
+  已删除 'upload/edge_20034.txt'
+  已删除 'upload/a_20600.txt'
+  保留（非本次，10月2日 11:33/11:42 产生）:
+    upload/novasmoke_11079.txt
+    upload/novasmoke_14152.txt
+
+--- 服务器日志：未删除 ---
+  ServerLog/2026_10_02_server 覆盖整个 10月2日，其中含今日上午（11:33-11:43）的活动记录，
+  无法按「本次测试」切分，删除会连带清掉你上午的运行日志，故保留。
+
+--- 保留的测试产物（均为 .gitignore 覆盖，不污染仓库）---
+  build-final  (7.5M)
+  build-final-dbg  (33M)
+  build-final-asan  (36M)
+  server  (228K)
+  test_pressure/results/acceptance_2026-10-02/  (44K)

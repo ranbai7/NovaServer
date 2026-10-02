@@ -1,0 +1,36 @@
+NovaServer 验收测试 — L5 · 协议与边界
+时间: 2026-10-02 15:05:23  服务端端口: 9006
+
+  通过  缺 Host 头 — HTTP/1.1 400 Bad Request
+  失败  非法方法 PUT — HTTP/1.1 501 Not Implemented
+  通过  未知 HTTP 版本 — HTTP/1.1 400 Bad Request
+  通过  超长请求行 16KiB — HTTP/1.1 431 Request Header Fields Too Large
+  通过  超长请求行后服务端存活 — 跟随请求 200
+  失败  超长请求头 16KiB — HTTP/1.1 431 Request Header Fields Too Large
+  通过  GET 带 body 仍正常 — HTTP/1.1 200 OK
+  通过  HEAD 无响应体 — 头结束于 93，总长 97
+  通过  空请求行 — HTTP/1.1 400 Bad Request
+  通过  半关闭后仍收完整响应 — HTTP/1.1 200 OK
+  通过  20 次立即断开后服务端存活 — 跟随请求 200
+  通过  服务端全程存活 — 最终探测 200
+L5 退出码: 1
+
+=== 上传体积上限（>4 MiB，预期 413）===
+  5 MiB 上传响应码: 415 失败
+
+=== L5 修正用例（前三条为用例自身预期写错，非服务端缺陷）===
+依据代码: MAX_HEADER_SIZE=8KiB, MAX_UPLOAD_SIZE=4MiB, 白名单不含 .bin 含 .txt
+
+  通过  非法但已规范定义的方法 PUT — HTTP/1.1 501 Not Implemented
+  通过  无法识别的方法记号 → 400 — HTTP/1.1 400 Bad Request
+  通过  超长请求头 16KiB → 431 — HTTP/1.1 431 Request Header Fields Too Large
+  通过  修正组之后服务端存活 — HTTP/1.1 200 OK
+  修正组退出码: 0
+
+=== 上传体积上限（白名单内 .txt，5 MiB，预期 413）===
+  .txt 5 MiB → 413 通过
+=== 对照：白名单外 .bin（同体积），预期 415 且先于体积判定 ===
+  .bin 5 MiB → 415 通过
+
+=== 边界对照：白名单内 .txt 恰好 4 MiB（预期 200）===
+  .txt 4 MiB → 200 通过

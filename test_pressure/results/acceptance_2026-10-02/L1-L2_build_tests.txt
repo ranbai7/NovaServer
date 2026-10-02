@@ -1,0 +1,16 @@
+NovaServer 验收测试 — L1/L2 构建与单元测试
+时间: 2026-10-02 15:04:15
+HEAD: 7d43672  docs: 记录全项目审核的发现与修复
+工作区: 0 处改动
+
+=== L1 Release 构建告警数: 0 / 错误数: 0 ===
+=== L1 Debug   构建告警数: 0 / 错误数: 0 ===
+
+=== L2 Release ctest ===
+100% tests passed, 0 tests failed out of 7
+
+Total Test time (real) =   1.08 sec
+=== L2 Debug ctest ===
+100% tests passed, 0 tests failed out of 7
+
+Total Test time (real) =   1.18 sec

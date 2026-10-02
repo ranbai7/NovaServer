@@ -1,7 +1,7 @@
 # 性能数据汇总与优化评价
 
 > 本文汇总项目各阶段保留的压测数据，给出优化前后的对比与评价。
-> 原始输出见 `test_pressure/results/`（该目录不入库），测量脚本见 `test_pressure/bench.sh`。
+> 原始输出见 `test_pressure/results/`，测量脚本见 `test_pressure/bench.sh`。
 > 逐项的详细记录见 `docs/changes/000`、`013`、`021`、`024`、`027`、`029`、`030`、`031`、`034`。
 
 ## 一、测量方法与可比性

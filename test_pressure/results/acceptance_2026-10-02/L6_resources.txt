@@ -1,0 +1,22 @@
+NovaServer 验收测试 — L6 · 并发与资源
+时间: 2026-10-02 15:06:01
+
+=== -m × -t 组合：启动 → 请求 → SIGTERM 优雅退出 ===
+  m        t      请求   退出信号 退出码
+  0        1      200      SIGTERM    0 通过
+  0        8      200      SIGTERM    0 通过
+  1        1      200      SIGTERM    0 通过
+  1        8      200      SIGTERM    0 通过
+  2        1      200      SIGTERM    0 通过
+  2        8      200      SIGTERM    0 通过
+  3        1      200      SIGTERM    0 通过
+  3        8      200      SIGTERM    0 通过
+
+=== SIGINT 优雅退出 ===
+  SIGINT 退出码: 0 通过
+
+=== 描述符耗尽兜底（ulimit -n 64）===
+    [充足] 收到 200 字节: HTTP/1.1 200 OK
+    已占用 200 条连接
+    [耗尽] 连接被立即关闭（EMFILE 兜底路径）
+  emfile 之后服务端退出码: 0 通过

@@ -16,6 +16,8 @@ ServerLog/
 *.log
 
 # ===== 压测原始输出 =====
+# 目录整体忽略，避免每次压测都在 git status 里留下未跟踪文件；
+# 但文档（README、docs/）所引用的证据文件需入库，用 git add -f 显式加入
 test_pressure/results/
 
 # ===== 上传目录 =====
