@@ -118,6 +118,21 @@ Linux 下 C++ 轻量级 Web 服务器，并发模型为**主从 Reactor（one lo
 
 压测脚本见 [test_pressure/bench.sh](test_pressure/bench.sh)。
 
+### 优化前后的整体对照
+
+阶段零基线（[`000`](docs/changes/000-baseline.md)）为后续对比设定了四项指标，如今都有了结果：
+
+| 指标 | 优化前（`000`） | 优化后（`034`） | 变化 |
+|:--|--:|--:|:--|
+| 默认配置 QPS | 19808 | **33151** | **+67%** |
+| P99 延迟 | 899.99 ms | **16.79 ms** | 降至约 1/54 |
+| 常驻内存 | 262.8 MB | **12.6 MB** | **−95%** |
+| 线程数对吞吐的影响 | 无差异（1.3% 以内） | `-t1` 28372 → `-t2` **48185** | 出现显著影响 |
+
+分段数据：阶段二后见 [`021`](docs/changes/021-baseline-after-fixes.md)，内存改造见 [`013`](docs/changes/013-dynamic-buffers.md)，日志改造见 [`030`](docs/changes/030-log-double-buffer.md)，最终复核见 [`034`](docs/changes/034-final-perf-revalidation.md)。
+
+> `000` 与 `034` 采于不同日期，含约 ±10%~27% 的时段差异，上表仅作方向性参考。**精确对照以同一时段重测的 A/B 为准**，见 [`031`](docs/changes/031-baseline-comparison.md) 与 [`034`](docs/changes/034-final-perf-revalidation.md)。
+
 
 快速运行
 ------------
