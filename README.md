@@ -107,14 +107,14 @@ Linux 下 C++ 轻量级 Web 服务器，并发模型为**主从 Reactor（one lo
 
 工具为 `wrk`，`-c100`，服务端以 `-c 1` 关闭日志，每组 5 次取中位数。子 Reactor 线程数的影响：
 
-| `-t` | QPS | P50 (ms) | P99 (ms) |
-|--:|--:|--:|--:|
-| 0（单循环，对照） | 29825 | 3.31 | 4.82 |
-| 1 | 27868 | 3.34 | 16.12 |
-| **2** | **50270** | **1.96** | **2.75** |
-| 4 | 37705 | 2.50 | 8.22 |
+| `-t` | QPS | P50 (ms) | P99 (ms) | RSS (MB) |
+|--:|--:|--:|--:|--:|
+| 1 | 28372 | 3.35 | 7.61 | 11.7 |
+| **2** | **48185** | **2.06** | **2.96** | **11.8** |
+| 4 | 36815 | 2.58 | 8.00 | 12.0 |
+| 8 | 33151 | 3.11 | 16.79 | 12.6 |
 
-测试机的 4 个 vCPU 实为 2 物理核 + 超线程，且 wrk 与服务端同机，因此 2 个子线程即已占满可用并行度，更多线程反而带来调度开销。完整的环境说明与数据见 [docs/changes/029-uninit-mapping-crash.md](docs/changes/029-uninit-mapping-crash.md)；重构前的基线见 [docs/changes/021-baseline-after-fixes.md](docs/changes/021-baseline-after-fixes.md)；与重构前基线在同一时段做的对照见 [docs/changes/031-baseline-comparison.md](docs/changes/031-baseline-comparison.md)。
+测试机的 4 个 vCPU 实为 2 物理核 + 超线程，且 wrk 与服务端同机，因此 2 个子线程即已占满可用并行度，更多线程反而带来调度开销。上表取自 [`034`](docs/changes/034-final-perf-revalidation.md) 的同时段对照，原始输出在 `test_pressure/results/perf_2026-10-02/`；**各阶段的完整数据与优化前后的总体评价见 [docs/performance.md](docs/performance.md)**。
 
 压测脚本见 [test_pressure/bench.sh](test_pressure/bench.sh)。
 
