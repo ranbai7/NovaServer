@@ -10,6 +10,8 @@ tags
 # ===== 本地配置 =====
 # 仓库提供 config.example.ini 作为模板，实际取值的配置不入库（含数据库口令）
 config.ini
+# 本地工具配置（各机器不同，与项目无关）
+.claude/
 
 # ===== 运行时日志 =====
 ServerLog/
