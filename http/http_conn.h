@@ -32,12 +32,10 @@ class http_conn
 {
 public:
     static const int FILENAME_LEN = 200;
-    //固定页面中最长的路径是上传成功后的跳转页 "/Upload-Success.html"（20 字节）。
-    //根目录长度须为它留出余量，否则这些页面拼进 m_real_file 时会被截掉
+    //最长固定页面路径是 "/Upload-Success.html"（20 字节），根目录长度须为它留余量，否则拼进 m_real_file 会被截掉
     static const int LONGEST_PAGE_PATH_LEN = 20;
     static const int MAX_ROOT_DIR_LEN = FILENAME_LEN - LONGEST_PAGE_PATH_LEN - 1;
-    //两个缓冲区按需扩容：下面两个常量为初始大小，上限见 MAX_*_SIZE。
-    //请求体超出上限时返回 413，而不是像此前那样把连接直接关掉
+    //两块缓冲区按需扩容，下列常量为初始大小，上限见 MAX_*_SIZE；请求体超限返回 413，不再像此前那样直接关闭连接
     static const int READ_BUFFER_SIZE = 2048;
     static const int WRITE_BUFFER_SIZE = 1024;
     static const int MAX_REQUEST_SIZE = 8 * 1024 * 1024;
@@ -89,16 +87,11 @@ public:
 public:
     http_conn()
     {
-        //未注入通知器时也保证可调用：事件通知是协议层的可选依赖，
-        //缺省时退化为「什么也不做」，而不是在调用点抛 bad_function_call
+        //未注入通知器时也要可调用：缺省退化为「什么也不做」，而不是在调用点抛 bad_function_call
         m_want_read = [] {};
         m_want_write = [] {};
 
-        //指向读缓冲与文件映射的成员必须先置空。reset() 的第一步是 unmap()，
-        //它要读 m_file_address 判断有没有映射待释放；而连接对象是复用堆内存的，
-        //make_shared 拿到的块会残留上一个连接的取值——那个地址对应的映射早已被
-        //释放，再次 munmap 就会解除掉别人的映射（堆或其他 mmap），
-        //表现为无从解释的堆破坏，且与崩溃点相隔甚远
+        //必须先置空：reset() 首步的 unmap() 要读 m_file_address；连接对象复用堆内存，残留旧地址会再次 munmap，解除别人的映射，表现为无从解释的堆破坏
         m_url = nullptr;
         m_version = nullptr;
         m_host = nullptr;
@@ -109,9 +102,7 @@ public:
     ~http_conn() {}
 
 public:
-    //事件注册权归连接的所有者：协议层只表达「接下来关心什么」，不再直接操作
-    //epoll。协议状态机里「请求还没收全 -> 继续读」「响应就绪 -> 转去写」本来就是
-    //解析逻辑的一部分，留在这里最自然，改动也只有几处调用点
+    //事件注册权归连接的所有者：协议层只表达「接下来关心什么」，不直接操作 epoll；状态机里的读写意图留在这里最自然，改动也只有几处调用点
     using EventCallback = std::function<void()>;
     void set_event_notifier(EventCallback want_read, EventCallback want_write);
 
@@ -122,14 +113,11 @@ public:
     bool read_once();
     bool write();
     const sockaddr_in *get_address() const { return &m_address; }
-    //加载用户表到进程内的缓存。与任何连接实例无关，因此在启动期一次性调用；
-    //日志开关作为参数传入，因为静态函数里没有连接成员可读
+    //加载用户表到进程内缓存，与实例无关，启动期一次性调用；日志开关须作参数传入，静态函数读不到连接成员
     static void initmysql_result(connection_pool *connPool, int close_log);
-    //释放文件映射。连接在任何时刻关闭都要调用它：映射可能建立在一次尚未
-    //写出响应的请求上，而那条路径不经过 write() 里的释放
+    //释放文件映射。连接在任何时刻关闭都要调用：映射可能建立在尚未写出响应的请求上，那条路径不经 write() 里的释放
     void unmap();
-    //是否还有未完成的工作：已收到但尚未处理的请求，或已生成但尚未发完的响应。
-    //对端半关闭时据此判断能否立即关闭连接——两者都还在等本端动作
+    //是否还有未完成的工作：已收到未处理的请求或已生成未发完的响应；对端半关闭时据此判断能否立即关闭
     bool has_pending_work() const { return m_read_idx > 0 || bytes_to_send > 0; }
 
 private:
@@ -142,8 +130,7 @@ private:
     //回应 100 Continue，告知客户端可以开始发送请求体
     void send_continue();
     HTTP_CODE do_request();
-    //把「根目录 + 相对路径」写入 m_real_file。总长超出容量时返回 false，
-    //调用方应判为错误请求：被截断的路径会指向并非请求目标的文件
+    //把「根目录 + 相对路径」写入 m_real_file；超出容量返回 false，调用方应判为错误请求：截断的路径并非请求目标
     bool set_real_file(const char *relative_path);
     char *get_line() { return m_read_buf.data() + m_start_line; };
     LINE_STATUS parse_line();
@@ -161,7 +148,6 @@ private:
     void grow_read_buffer(size_t size);
     bool grow_write_buffer();
 
-    // 新增：文件上传相关方法
     HTTP_CODE parse_multipart_content();             // 解析 multipart 请求体
     HTTP_CODE check_upload_name_early();             // 请求体未收完时的上传名提前判定
     bool save_uploaded_file();                       // 保存文件到磁盘
@@ -174,9 +160,7 @@ public:
     int m_state; //读为0, 写为1
 
 private:
-    //登录与注册要从连接池取一个连接。连接池由服务器在启动期建好、生命周期覆盖
-    //全部请求，因此这里只持有一个不具所有权的指针。给默认值是为了未走 init 的
-    //路径也不会读到未初始化的取值
+    //登录与注册要从连接池取连接；池的生存期覆盖全部请求，故这里只持不具所有权的指针，给默认值是为了未走 init 的路径不读到未初始化取值
     connection_pool *m_connPool = nullptr;
 
     int m_sockfd;
@@ -192,6 +176,8 @@ private:
     bool m_oversized;          //请求体已超过 MAX_REQUEST_SIZE
     bool m_has_content_length; //是否已出现过 Content-Length 头
     bool m_expect_continue;    //请求带 Expect: 100-continue，需在收请求体前回应 100
+    //本次是否已完整解析出一个请求；置位后读缓冲剩余字节才属于下一个请求（HTTP 管线化），复位时才敢保留
+    bool m_request_parsed = false;
     CHECK_STATE m_check_state;
     METHOD m_method;
     char m_real_file[FILENAME_LEN];

@@ -16,27 +16,23 @@ TcpConnection::TcpConnection(EventLoop *loop, int connfd, const sockaddr_in &pee
 
 TcpConnection::~TcpConnection()
 {
-    //兜底：正常路径已由 close() 释放过了，这里因幂等而是空操作
+    //兜底：正常路径已由 close() 释放过，这里因幂等而是空操作
     release_fd();
 }
 
 void TcpConnection::start()
 {
-    //协议层经这两个回调表达「接下来关心什么事件」，实际注册由本对象完成。
-    //不注入的话协议层会退化为空操作（构造函数里的缺省值），表现为响应组装好了
-    //却不转去关注可写事件
+    //协议层经这两个回调表达「接下来关心什么事件」，实际注册由本对象完成；不注入的话协议层退化为空操作（构造函数缺省值），表现为响应组装好了却不转去关注可写事件
     m_conn.set_event_notifier([this] { m_channel->enable_reading(); }, [this] { m_channel->enable_writing(); });
 
     m_channel->set_read_callback([this] { handle_read(); });
     m_channel->set_write_callback([this] { handle_write(); });
     m_channel->set_close_callback([this] { handle_close(); });
-    //绑上弱引用：回调里关闭连接会释放最后一份强引用，没有这层保护，
-    //handle_event 返回后访问的就是已析构的对象
+    //绑上弱引用：回调里关闭连接会释放最后一份强引用，无此保护则 handle_event 返回后访问的是已析构对象
     m_channel->tie(weak_from_this());
     m_channel->enable_reading();
 
-    //空闲定时器持有弱引用：连接先于定时器销毁时，回调取到空指针直接丢弃。
-    //旧实现按 fd 下标访问连接槽位，fd 被内核复用后会命中另一条连接
+    //空闲定时器持有弱引用：连接先于定时器销毁时回调取到空指针直接丢弃；此前按 fd 下标访问连接槽位，fd 被内核复用后会命中另一条连接
     const std::weak_ptr<TcpConnection> weak = weak_from_this();
     m_timer_id = m_loop->timer_queue()->add_timer(m_idle_timeout_ms,
                                                   [weak]
@@ -48,8 +44,7 @@ void TcpConnection::start()
 
 void TcpConnection::close()
 {
-    //五个触发点（读失败、处理失败、写失败、对端关闭、空闲超时）都汇聚到这里，
-    //因此这里必须是幂等的
+    //五个触发点（读失败、处理失败、写失败、对端关闭、空闲超时）都汇聚到这里，因此这里必须幂等
     if (m_closed)
         return;
 
@@ -73,8 +68,7 @@ void TcpConnection::release_fd()
 
     if (m_fd >= 0)
     {
-        //顺序不可颠倒：描述符被内核复用之后，一条迟到的 EPOLL_CTL_DEL
-        //会作用到新连接上
+        //顺序不可颠倒：描述符被内核复用之后，一条迟到的 EPOLL_CTL_DEL 会作用到新连接上
         m_channel->disable_all();
         m_channel->remove();
         ::close(m_fd);
@@ -107,12 +101,15 @@ void TcpConnection::handle_write()
     }
 
     refresh_idle_timer();
+
+    //管线化：一次读入可能含多个请求，前一个响应发完后读缓冲里可能还剩着下一个（reset 保留已完整解析时剩下的字节）；立刻接着处理，否则要等对端再发数据才动
+    if (m_conn.has_pending_work() && !m_conn.process())
+        close();
 }
 
 void TcpConnection::handle_close()
 {
-    //对端关闭了写端或连接出错。只有确实无事可做时才关闭：请求可能刚读完、
-    //响应也可能还没发完，而半关闭的事件常与读写事件一起返回
+    //对端关闭写端或连接出错。只有确实无事可做时才关闭：请求可能刚读完、响应也可能还没发完，而半关闭事件常与读写事件一起返回
     if (m_conn.has_pending_work())
         return; //由读或写路径收尾
 

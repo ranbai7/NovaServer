@@ -29,8 +29,7 @@ void EventLoopThreadPool::start()
 
 void EventLoopThreadPool::thread_func(int index)
 {
-    //循环建在线程栈上：它的析构发生在该线程内，于是连接与定时器的最终释放
-    //也发生在正确的线程上——若由主线程持有并析构，就会在那里释放别人的资源
+    //循环建在线程栈上：析构发生在该线程内，连接与定时器的最终释放也就发生在正确的线程上；若由主线程持有并析构会在那里释放别人的资源
     EventLoop loop;
 
     {
@@ -54,6 +53,11 @@ EventLoop *EventLoopThreadPool::next_loop()
         return m_base_loop;
 
     const int index = m_next.fetch_add(1) % m_thread_num;
+
+    //子循环可能因 epoll_wait 致命错误先于主循环退出、登记被置空：退回主循环继续服务，而不是把空指针交给调用方解引用
+    if (m_loops[index] == nullptr)
+        return m_base_loop;
+
     return m_loops[index];
 }
 

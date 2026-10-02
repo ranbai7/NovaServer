@@ -11,7 +11,6 @@
 
 namespace
 {
-//去掉首尾空白
 std::string trim(const std::string &text)
 {
     const char *spaces = " \t\r\n";
@@ -46,8 +45,7 @@ bool parse_int(const std::string &text, int &out)
     return true;
 }
 
-//取出一个配置项：优先匹配「节.键」，其次匹配裸键；
-//取出后从集合中删除，便于最后检查是否有无法识别的条目
+//取出一个配置项：优先匹配「节.键」，其次裸键；取出后从集合中删除，便于最后检查未识别条目
 void take(std::map<std::string, std::string> &items, const std::string &section, const std::string &key,
           std::string &value, bool &found)
 {
@@ -162,7 +160,8 @@ bool Config::apply(std::map<std::string, std::string> &items, std::string &error
         std::string value;
         bool found = false;
         take(items, section, key, value, found);
-        if (!found || m_cli_keys.count(key) != 0)
+        //键名须带节名：不同节可有同名键，只比裸键名会让命令行覆盖一项时连带跳过另一项
+        if (!found || m_cli_keys.count(section + "." + key) != 0)
             return;
         if (!parse_int(value, out) && message.empty())
             message = "配置项 " + key + " 的取值不是合法整数: " + value;
@@ -172,7 +171,7 @@ bool Config::apply(std::map<std::string, std::string> &items, std::string &error
         std::string value;
         bool found = false;
         take(items, section, key, value, found);
-        if (found && m_cli_keys.count(key) == 0)
+        if (found && m_cli_keys.count(section + "." + key) == 0)
             out = value;
     };
 
@@ -204,8 +203,7 @@ bool Config::apply(std::map<std::string, std::string> &items, std::string &error
         return false;
     }
 
-    //应用完毕后仍有剩余条目，说明存在拼写错误或已不再支持的键。
-    //静默忽略会让「改了配置却没生效」难以察觉，因此直接报错
+    //应用后仍有剩余条目，说明存在拼写错误或已不支持的键；静默忽略会让「改了配置却没生效」难以察觉，故直接报错
     if (!items.empty())
     {
         error = "配置文件中存在无法识别的配置项: " + items.begin()->first;
@@ -238,43 +236,43 @@ void Config::parse_arg(int argc, char *argv[])
         case 'p':
         {
             PORT = int_arg(optarg, "p");
-            m_cli_keys.insert("port");
+            m_cli_keys.insert("server.port");
             break;
         }
         case 'l':
         {
             LOGWrite = int_arg(optarg, "l");
-            m_cli_keys.insert("write_mode");
+            m_cli_keys.insert("log.write_mode");
             break;
         }
         case 'm':
         {
             TRIGMode = int_arg(optarg, "m");
-            m_cli_keys.insert("trig_mode");
+            m_cli_keys.insert("server.trig_mode");
             break;
         }
         case 'o':
         {
             OPT_LINGER = int_arg(optarg, "o");
-            m_cli_keys.insert("opt_linger");
+            m_cli_keys.insert("server.opt_linger");
             break;
         }
         case 's':
         {
             sql_num = int_arg(optarg, "s");
-            m_cli_keys.insert("pool_size");
+            m_cli_keys.insert("database.pool_size");
             break;
         }
         case 't':
         {
             thread_num = int_arg(optarg, "t");
-            m_cli_keys.insert("thread_num");
+            m_cli_keys.insert("server.thread_num");
             break;
         }
         case 'c':
         {
             close_log = int_arg(optarg, "c");
-            m_cli_keys.insert("close_log");
+            m_cli_keys.insert("server.close_log");
             break;
         }
         case 'f':
@@ -284,8 +282,7 @@ void Config::parse_arg(int argc, char *argv[])
             break;
         }
         default:
-            //未知参数在此终止启动。静默忽略会掩盖「参数名写错」，而 -a 这类
-            //已被移除的参数被忽略时，使用者会以为它仍然生效
+            //未知参数在此终止启动：静默忽略会掩盖「参数名写错」，被移除的参数（如 -a）被忽略时使用者会以为它仍生效
             std::fprintf(stderr, "无法识别的参数: -%c\n", optopt);
             std::exit(EXIT_FAILURE);
         }

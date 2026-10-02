@@ -15,7 +15,6 @@
 #include <unistd.h>
 #include <vector>
 
-//定义http响应的一些状态信息
 const char *ok_200_title = "OK";
 const char *error_400_title = "Bad Request";
 const char *error_400_form = "Your request has bad syntax or is inherently impossible to satisfy.\n";
@@ -36,8 +35,7 @@ const char *error_415_form = "The uploaded file type is not accepted by this ser
 const char *error_417_title = "Expectation Failed";
 const char *error_417_form = "The expectation given in the Expect header cannot be met.\n";
 
-//服务端实现之外但属于 HTTP 规范的请求方法。它们与无法识别的记号需要区分开：
-//前者应当回 501，后者是语法错误
+//规范定义但本服务端未实现的请求方法，与无法识别的记号要区分开：前者回 501，后者是语法错误
 bool is_known_method(const char *method)
 {
     static const char *kMethods[] = {"PUT", "DELETE", "TRACE", "OPTIONS", "CONNECT", "PATCH"};
@@ -49,8 +47,7 @@ bool is_known_method(const char *method)
     return false;
 }
 
-//解析 Content-Length 的取值。只接受非空的十进制数字串：
-//atol 会把 "abc" 静默当作 0、把 "12abc" 当作 12，两种都会让长度与实际不符
+//解析 Content-Length，只接受非空的十进制数字串：atol 会把 "abc" 静默当作 0、把 "12abc" 当作 12，长度与实际不符
 bool parse_content_length(const char *text, long &out)
 {
     if (text == nullptr || *text == '\0')
@@ -72,12 +69,10 @@ bool parse_content_length(const char *text, long &out)
     return true;
 }
 
-//上传目录。与站点根目录分开：站点根目录提供站点自身的内容，上传目录的内容来自
-//用户，两者的访问规则不同（后者一律按附件下载）
+//上传目录，与站点根目录分开：站点根目录提供站点自身内容，上传目录内容来自用户、一律按附件下载，两者访问规则不同
 const char *kUploadDir = "./upload";
 
-//允许上传的扩展名白名单。上传内容会落盘并通过 HTTP 提供，因此限定在明确的类型上：
-//不接受超文本与脚本（.html/.svg/.js），它们在浏览器中可携带并执行脚本
+//上传扩展名白名单。上传内容会落盘并经 HTTP 提供，故限定在明确类型上，不接受超文本与脚本（.html/.svg/.js），它们可在浏览器中执行
 const char *kAllowedUploadExt[] = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp",
                                    ".mp4", ".webm", ".mp3", ".txt", ".pdf", ".zip"};
 
@@ -96,8 +91,7 @@ bool is_allowed_upload_name(const std::string &name)
     return false;
 }
 
-//上传文件名的准入判定：非空、不以点开头（列表页会跳过这类名字）、扩展名在白名单内。
-//落盘前的校验与请求体接收途中的提前判定共用它，保证两处的结论一致
+//上传文件名准入判定：非空、不以点开头（列表页会跳过这类名字）、扩展名在白名单内；落盘前校验与提前判定共用它，保证两处结论一致
 http_conn::HTTP_CODE check_upload_name(const std::string &name)
 {
     if (name.empty() || name[0] == '.')
@@ -107,9 +101,7 @@ http_conn::HTTP_CODE check_upload_name(const std::string &name)
     return http_conn::GET_REQUEST; //准入
 }
 
-//multipart 请求体中第一个 part 的头部信息。
-//ok 为假表示给定的这一段字节还不足以判定结构——请求体边收边判时，
-//「还没到齐」必须与「结构确实非法」区分开
+//multipart 请求体中第一个 part 的头部信息；ok 为假表示这段字节还不足以判定结构——边收边判时「还没到齐」必须与「结构确实非法」区分开
 struct MultipartPart
 {
     bool ok = false;
@@ -225,7 +217,7 @@ std::string url_encode_segment(const std::string &text)
     return out;
 }
 
-// 新增：根据文件扩展名返回 MIME 类型
+//根据文件扩展名返回 MIME 类型
 static const char *get_mime_type(const char *path)
 {
     const char *ext = strrchr(path, '.');
@@ -259,8 +251,7 @@ static const char *get_mime_type(const char *path)
 
 namespace
 {
-//已注册用户的用户名与口令。该表被多个工作线程并发读写，
-//因此全部访问都收敛到下面两个加锁封装中，避免出现「写侧加锁、读侧裸读」的不对称同步
+//已注册用户的用户名与口令。该表被多个工作线程并发读写，故访问统一收敛到下面两个加锁封装，避免「写侧加锁、读侧裸读」的不对称同步
 std::map<std::string, std::string> g_users;
 locker g_users_lock;
 
@@ -276,8 +267,7 @@ bool lookup_user(const std::string &name, std::string &passwd)
     return found;
 }
 
-//用变换后的路径覆盖读缓冲区中的原文，返回原指针以便链式书写。
-//解码与规范化都只会缩短路径，因此就地写回不会超出原占用的空间
+//用变换后的路径覆盖读缓冲区原文，返回原指针以便链式书写；解码与规范化只会缩短路径，就地写回不会超出原占用的空间
 char *overwrite_url(char *url, const std::string &replacement)
 {
     memcpy(url, replacement.data(), replacement.size());
@@ -285,9 +275,7 @@ char *overwrite_url(char *url, const std::string &replacement)
     return url;
 }
 
-//解析 application/x-www-form-urlencoded 请求体：字段以 '&' 分隔，
-//键与值以第一个 '=' 分隔。字段缺失、为空或任意长都不会越界，
-//也不依赖字段名、顺序或长度等任何固定假设
+//解析 application/x-www-form-urlencoded 请求体：字段以 '&' 分隔，键与值以第一个 '=' 分隔；字段缺失、为空或任意长都不越界，也不依赖字段名、顺序或长度等固定假设
 std::map<std::string, std::string> parse_form_body(const char *body, long length)
 {
     std::map<std::string, std::string> params;
@@ -329,9 +317,7 @@ std::map<std::string, std::string> parse_form_body(const char *body, long length
     std::exit(EXIT_FAILURE);
 }
 
-//预处理语句的字符串参数绑定。
-//MYSQL_BIND 中的 length 是指针，直接指向临时变量会留下悬垂指针，
-//因此把长度变量与绑定数组放在同一处持有
+//预处理语句的字符串参数绑定；MYSQL_BIND 中的 length 是指针，直接指向临时变量会留下悬垂指针，故把长度变量与绑定数组放在同一处持有
 class StringBinder
 {
 public:
@@ -373,8 +359,7 @@ bool execute_two_params(MYSQL *conn, const char *sql, const std::string &first, 
     return ok;
 }
 
-//哈希串比明文长得多，旧表的 char(50) 存不下。列宽不足时先加宽，
-//否则失败会推迟到注册或迁移写入时才暴露
+//哈希串比明文长得多，旧表的 char(50) 存不下；列宽不足时先加宽，否则失败会推迟到注册或迁移写入时才暴露
 const long kPasswordColumnLength = 255;
 
 void ensure_password_column(MYSQL *conn)
@@ -412,8 +397,7 @@ enum class RegisterResult
     kFailed
 };
 
-//注册用户：在锁内完成「查重 → 写库 → 更新内存」的完整序列，
-//使判重与插入之间不存在竞态窗口
+//注册用户：在锁内完成「查重 → 写库 → 更新内存」的完整序列，使判重与插入之间不存在竞态窗口
 RegisterResult register_user(const std::string &name, const std::string &password, MYSQL *conn)
 {
     g_users_lock.lock();
@@ -437,25 +421,21 @@ RegisterResult register_user(const std::string &name, const std::string &passwor
 
 void http_conn::initmysql_result(connection_pool *connPool, int close_log)
 {
-    //LOG_* 宏读取的是连接的成员 m_close_log，而本函数与实例无关（启动期一次性
-    //调用，没有连接对象），因此在函数内提供一个同名的局部量供宏使用
+    //LOG_* 宏读取连接的成员 m_close_log，而本函数与实例无关、无连接对象，故在函数内提供同名局部量供宏使用
     const int m_close_log = close_log;
 
-    //先从连接池中取一个连接
     MYSQL *mysql = NULL;
     connectionRAII mysqlcon(&mysql, connPool);
 
     //确保 passwd 列足以容纳哈希串
     ensure_password_column(mysql);
 
-    //在user表中检索username，passwd数据，浏览器端输入
     if (mysql_query(mysql, "SELECT username,passwd FROM user"))
     {
         LOG_ERROR("SELECT error:%s\n", mysql_error(mysql));
         return;
     }
 
-    //从表中检索完整的结果集
     MYSQL_RES *result = mysql_store_result(mysql);
     if (result == nullptr)
     {
@@ -463,7 +443,6 @@ void http_conn::initmysql_result(connection_pool *connPool, int close_log)
         return;
     }
 
-    //从结果集中获取下一行，将对应的用户名和密码，存入map中
     g_users_lock.lock();
     while (MYSQL_ROW row = mysql_fetch_row(result))
     {
@@ -472,9 +451,7 @@ void http_conn::initmysql_result(connection_pool *connPool, int close_log)
         if (name.empty())
             continue;
 
-        //历史遗留的明文记录在此升级为哈希，使库中不再留存明文。
-        //升级失败必须终止启动：否则该账号会带着明文留在内存中而校验永远不通过，
-        //表现为「口令正确却登录失败」，比启动失败更难定位
+        //历史遗留的明文记录在此升级为哈希，使库中不再留存明文。升级失败必须终止启动：否则该账号带着明文留在内存而校验永不通过，表现为「口令正确却登录失败」，比启动失败更难定位
         if (!password_hash::is_encoded(stored))
         {
             const std::string encoded = password_hash::encode(stored);
@@ -500,7 +477,6 @@ void http_conn::set_event_notifier(EventCallback want_read, EventCallback want_w
     m_want_write = std::move(want_write);
 }
 
-//初始化连接,外部调用初始化套接字地址
 void http_conn::init(int sockfd, const sockaddr_in &addr, const char *root, int TRIGMode, int close_log,
                      connection_pool *connPool)
 {
@@ -513,24 +489,29 @@ void http_conn::init(int sockfd, const sockaddr_in &addr, const char *root, int 
     m_close_log = close_log;
     m_connPool = connPool;
 
-    //描述符的注册不在这里：协议层只表达「关心什么事件」，注册由连接的所有者
-    //连同触发模式一并完成（见 Channel）
+    //描述符的注册不在这里：协议层只表达「关心什么事件」，注册由连接的所有者连同触发模式一并完成（见 Channel）
     reset();
 }
 
 //复位到可处理下一个请求的状态。连接复用与新建连接走的是同一段逻辑
 void http_conn::reset()
 {
-    //上一次请求可能留下了文件映射。正常路径由 write() 释放，但请求处理到一半
-    //就出错的路径不会走到那里，因此在复用的入口处统一释放一次
+    //上一次请求可能留下了文件映射：正常路径由 write() 释放，但处理到一半出错的路径走不到那里，故在复用入口处统一释放一次
     unmap();
+
+    //本次请求已完整解析时，读缓冲里剩余的字节属于下一个请求（HTTP 管线化），要原样留下；解析没走完时保留会让同一段被反复重解析
+    const size_t leftover = (m_request_parsed && m_read_idx > m_checked_idx)
+                                ? static_cast<size_t>(m_read_idx - m_checked_idx)
+                                : 0;
+    if (leftover > 0 && m_checked_idx > 0)
+        memmove(m_read_buf.data(), m_read_buf.data() + m_checked_idx, leftover);
+    m_request_parsed = false;
 
     mysql = NULL;
     bytes_to_send = 0;
     bytes_have_send = 0;
     m_check_state = CHECK_STATE_REQUESTLINE;
-    //本服务端只接受 HTTP/1.1，而该版本默认保持连接：只有请求显式给出
-    //Connection: close 时才会置假（见 parse_headers）
+    //本服务端只接受 HTTP/1.1，该版本默认保持连接：仅请求显式给出 Connection: close 时才置假（见 parse_headers）
     m_linger = true;
     m_method = GET;
     m_url = 0;
@@ -539,36 +520,35 @@ void http_conn::reset()
     m_host = 0;
     m_start_line = 0;
     m_checked_idx = 0;
-    m_read_idx = 0;
+    m_read_idx = static_cast<long>(leftover);
     m_body_start = 0;
     m_write_idx = 0;
     cgi = 0;
 
-    //指向请求体与文件映射的指针必须显式复位：连接对象会被复用，
-    //残留的上次取值会让 unmap 与判空逻辑作用于已失效的地址
+    //指向请求体与文件映射的指针必须显式复位：连接对象会复用，残留的上次取值会让 unmap 与判空逻辑作用于已失效的地址
     m_string = nullptr;
     m_file_address = nullptr;
     m_iv_count = 0;
 
-    // 新增：重置文件上传状态
+    //重置文件上传状态
     init_file_upload_state();
 
     m_oversized = false;
     m_has_content_length = false;
     m_expect_continue = false;
     m_header_end = 0;
-    //连接复用时不保留上次为超大请求扩容出来的缓冲，避免大请求之后内存被长期占用
-    if (m_read_buf.capacity() > static_cast<size_t>(READ_BUFFER_SIZE) * 4)
+    //连接复用时不保留上次为超大请求扩容的缓冲，避免大请求后内存被长期占用；但缓冲里还压着下一个请求的字节时不能缩容
+    if (0 == leftover && m_read_buf.capacity() > static_cast<size_t>(READ_BUFFER_SIZE) * 4)
         std::vector<char>().swap(m_read_buf);
-    m_read_buf.resize(READ_BUFFER_SIZE);
+    const size_t keep = leftover > static_cast<size_t>(READ_BUFFER_SIZE) ? leftover : READ_BUFFER_SIZE;
+    m_read_buf.resize(keep);
     m_write_buf.resize(WRITE_BUFFER_SIZE);
-    memset(m_read_buf.data(), '\0', m_read_buf.size());
+    memset(m_read_buf.data() + leftover, '\0', keep - leftover);
     memset(m_write_buf.data(), '\0', m_write_buf.size());
     memset(m_real_file, '\0', FILENAME_LEN);
 }
 
-//从状态机，用于分析出一行内容
-//返回值为行的读取状态，有LINE_OK,LINE_BAD,LINE_OPEN
+//从状态机，用于分析出一行内容；返回行的读取状态（LINE_OK/LINE_BAD/LINE_OPEN）
 http_conn::LINE_STATUS http_conn::parse_line()
 {
     char temp;
@@ -601,9 +581,7 @@ http_conn::LINE_STATUS http_conn::parse_line()
     return LINE_OPEN;
 }
 
-//扩容读缓冲区。重分配之后缓冲区地址会变化，此前解析出的指针随之失效，
-//因此在这里把它们按同样的偏移重新指向新地址。
-//注意：凡是指向读缓冲区的成员都必须在下面一并调整
+//扩容读缓冲区。重分配后缓冲区地址变化，此前解析出的指针随之失效，故在这里按同样偏移重新指向新地址；凡指向读缓冲区的成员都必须在下面一并调整
 void http_conn::grow_read_buffer(size_t size)
 {
     const char *old_data = m_read_buf.data();
@@ -632,8 +610,7 @@ bool http_conn::ensure_read_space()
     const size_t grown = m_read_buf.size() * 2;
     if (grown > static_cast<size_t>(MAX_REQUEST_SIZE))
     {
-        //请求体超过服务端允许的上限。这里不直接关闭连接，
-        //而是置位后交由 process_read / process_write 回应 413
+        //请求体超过服务端允许的上限。这里不直接关闭连接，而是置位后交由 process_read / process_write 回应 413
         m_oversized = true;
         return false;
     }
@@ -642,8 +619,7 @@ bool http_conn::ensure_read_space()
     return true;
 }
 
-//循环读取客户数据，直到无数据可读或对方关闭连接
-//非阻塞ET工作模式下，需要一次性将数据读完
+//循环读取客户数据，直到无数据可读或对端关闭；非阻塞 ET 工作模式下需一次性将数据读完
 bool http_conn::read_once()
 {
     //已判定超限：不再读取，等待 413 发出
@@ -662,11 +638,10 @@ bool http_conn::read_once()
         bytes_read =
             recv(m_sockfd, m_read_buf.data() + m_read_idx, m_read_buf.size() - static_cast<size_t>(m_read_idx), 0);
 
-        //先判返回值再累加读索引：负数直接累加会破坏索引，后续解析将读到错误位置
+        //先判返回值再累加读索引：负数直接累加会破坏索引，后续解析将读到错误的位置
         if (bytes_read < 0)
         {
-            //非阻塞下 EAGAIN 表示此刻无数据可读，连接仍然有效；
-            //其余负值才是真正的读取出错
+            //非阻塞下 EAGAIN 表示此刻无数据可读，连接仍然有效；其余负值才是真正的读取出错
             return (errno == EAGAIN || errno == EWOULDBLOCK);
         }
         if (bytes_read == 0)
@@ -695,10 +670,7 @@ bool http_conn::read_once()
             }
             else if (bytes_read == 0)
             {
-                //对端已关闭，但本次可能刚读到过数据：ET 循环读到 EAGAIN 才停，
-                //而「发完请求就关闭写端」的客户端会让这次循环以 recv 返回 0 收尾。
-                //此时若直接返回 false，调用方会关闭连接，刚收到的请求就丢了——
-                //缓冲区非空时应当先把这批数据交给上层处理
+                //对端已关闭但本次可能刚读到数据：ET 循环里「发完请求就关写端」的客户端会以 recv 返回 0 收尾，直接返回 false 会丢掉刚收到的请求，缓冲区非空时应先交给上层处理
                 return m_read_idx > 0;
             }
             m_read_idx += bytes_read;
@@ -741,26 +713,27 @@ http_conn::HTTP_CODE http_conn::parse_request_line(char *text)
     m_version += strspn(m_version, " \t");
     if (strcasecmp(m_version, "HTTP/1.1") != 0)
         return BAD_REQUEST;
+    //绝对形式的 URI 剥掉协议与主机后若连 '/' 都没有，strchr 返回空指针，而下面那次比较会直接解引用它——必须在这里就返回
     if (strncasecmp(m_url, "http://", 7) == 0)
     {
         m_url += 7;
-        m_url = strchr(m_url, '/');
+        if ((m_url = strchr(m_url, '/')) == nullptr)
+            return BAD_REQUEST;
     }
 
     if (strncasecmp(m_url, "https://", 8) == 0)
     {
         m_url += 8;
-        m_url = strchr(m_url, '/');
+        if ((m_url = strchr(m_url, '/')) == nullptr)
+            return BAD_REQUEST;
     }
 
     if (!m_url || m_url[0] != '/')
         return BAD_REQUEST;
 
-    //解码与规范化的顺序不可颠倒：%2e%2e%2f 解码后才是 '..' 段，
-    //若先规范化后解码，编码形式就能绕过规范化里的全部判断
+    //解码必须在规范化之前：%2e%2e%2f 解码后才是 '..'，颠倒则绕过路径校验
     const std::string decoded = url_codec::decode(m_url, false);
-    //%00 解码后是字符串结束符。路径随后要按 C 字符串参与拼接与判等，
-    //含结束符的内容会在那里被截断，使实际处理的路径短于这里的判断对象
+    //%00 解码后是字符串结束符。路径随后按 C 字符串参与拼接与判等，含结束符的内容会在那里被截断，使实际处理的路径短于这里的判断对象
     if (decoded.find('\0') != std::string::npos)
         return BAD_REQUEST;
     m_url = overwrite_url(m_url, decoded);
@@ -777,7 +750,6 @@ http_conn::HTTP_CODE http_conn::parse_request_line(char *text)
     return NO_REQUEST;
 }
 
-//解析http请求的一个头部信息
 http_conn::HTTP_CODE http_conn::parse_headers(char *text)
 {
     //头部整体长度上限。请求行的结束位置即头部的起点，因此以解析游标衡量
@@ -792,14 +764,11 @@ http_conn::HTTP_CODE http_conn::parse_headers(char *text)
 
         if (m_content_length != 0)
         {
-            //请求体的起点在此处记录一次。解析游标 m_checked_idx 会随每次按行扫描
-            //向后移动，不能用它推算请求体位置
+            //请求体的起点在此处记录一次：解析游标 m_checked_idx 会随每次按行扫描向后移动，不能用它推算请求体位置
             m_body_start = m_checked_idx;
             m_check_state = CHECK_STATE_CONTENT;
 
-            //客户端在等 100 Continue 才肯发送请求体，因此必须在等待之前回应。
-            //放到这里而不是解析到 Expect 头时就发：Content-Length 也已校验完毕
-            //（超限的请求在解析那个头时即已返回 413），此时才是「确定要收这个体」
+            //客户端在等 100 Continue 才肯发送请求体，因此必须在等待之前回应。放到这里而非解析 Expect 头时就发：此时 Content-Length 已校验完毕（超限请求在解析那个头时已返回 413），才是「确定要收这个体」
             if (m_expect_continue)
                 send_continue();
 
@@ -811,9 +780,7 @@ http_conn::HTTP_CODE http_conn::parse_headers(char *text)
     {
         text += 11;
         text += strspn(text, " \t");
-        //本服务端只接受 HTTP/1.1，而该版本默认保持连接：m_linger 的基准值已是真，
-        //这里只需处理显式关闭。此前只在收到 keep-alive 时才置真，
-        //于是不带该头的客户端（curl、wrk 等多数实现）每个请求都要重连
+        //本服务端只接受 HTTP/1.1，该版本默认保持连接：m_linger 基准值已是真，这里只需处理显式关闭。此前只在收到 keep-alive 时才置真，于是不带该头的客户端（curl、wrk 等多数实现）每个请求都要重连
         if (strcasecmp(text, "close") == 0)
         {
             m_linger = false;
@@ -841,7 +808,6 @@ http_conn::HTTP_CODE http_conn::parse_headers(char *text)
         text += strspn(text, " \t");
         m_host = text;
     }
-    //新增：
     else if (strncasecmp(text, "Content-Type:", 13) == 0)
     {
         text += 13;
@@ -869,9 +835,7 @@ http_conn::HTTP_CODE http_conn::parse_headers(char *text)
         text += 7;
         text += strspn(text, " \t");
 
-        //HTTP/1.1 中唯一定义的期望是 100-continue：客户端在发送大体积请求体前
-        //先征求许可。不理会它并不会出错，但客户端要一直等到自身的期望超时
-        //才会把请求体发出来，这段时间是纯损耗
+        //HTTP/1.1 中唯一定义的期望是 100-continue：客户端发大体积请求体前先征求许可。不理会它并不会出错，但客户端要一直等到自身期望超时才发请求体，这段时间是纯损耗
         if (strcasecmp(text, "100-continue") == 0)
         {
             m_expect_continue = true;
@@ -890,25 +854,20 @@ http_conn::HTTP_CODE http_conn::parse_headers(char *text)
     return NO_REQUEST;
 }
 
-//回应 100 Continue。这一行不参与写缓冲的组装：写缓冲承载的是最终响应，
-//而 100 是请求处理中途的中间响应，写完即被后续的最终响应覆盖
+//回应 100 Continue。这一行不参与写缓冲的组装：写缓冲承载最终响应，而 100 是请求处理中途的中间响应，写完即被后续的最终响应覆盖
 void http_conn::send_continue()
 {
     static const char kContinueResponse[] = "HTTP/1.1 100 Continue\r\n\r\n";
     const ssize_t written = send(m_sockfd, kContinueResponse, sizeof(kContinueResponse) - 1, 0);
 
-    //非阻塞套接字上 25 字节写不下意味着发送缓冲已满，此时客户端通常也尚未开始
-    //发送请求体，数据会随后续写入排空。这种情况不值得中断整个请求
+    //非阻塞套接字上 25 字节写不下意味着发送缓冲已满，此时客户端通常也尚未开始发送请求体，数据会随后续写入排空，不值得中断整个请求
     if (written < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
         LOG_WARN("send 100 continue failed, errno:%d", errno);
 }
 
-//判断http请求是否被完整读入
 http_conn::HTTP_CODE http_conn::parse_content([[maybe_unused]] char *text)
 {
-    //请求体尚未收全时，只要 multipart 的 part 头部已经到达，文件名就已可判定。
-    //不合格就立刻拒绝：否则要等客户端把整个请求体（上限 8 MiB）传完才回 415，
-    //这段时间与带宽都是白费的
+    //请求体尚未收全时，只要 multipart 的 part 头部已到达，文件名就已可判定。不合格就立刻拒绝：否则要等客户端把整个请求体（上限 8 MiB）传完才回 415，白费时间与带宽
     if (m_is_file_upload)
     {
         const HTTP_CODE verdict = check_upload_name_early();
@@ -919,17 +878,14 @@ http_conn::HTTP_CODE http_conn::parse_content([[maybe_unused]] char *text)
     //以 m_body_start 而非 m_checked_idx 为基准：后者会被 parse_line 推到读索引处
     if (m_read_idx >= (m_content_length + m_body_start))
     {
-        //请求体由 Content-Length 定长界定，消费方都带长度读取（m_string 与
-        //m_content_length 成对使用），因此不在此处补写结束符——那个位置属于
-        //紧随其后的字节，写下结束符会把流水线中的下一个请求破坏掉
+        //请求体由 Content-Length 定长界定，消费方都带长度读取（m_string 与 m_content_length 成对使用），故不在此补写结束符：那个位置属于紧随其后的字节，写下会破坏流水线中的下一个请求
         m_string = m_read_buf.data() + m_body_start;
         return GET_REQUEST;
     }
     return NO_REQUEST;
 }
 
-//请求体边收边判：part 头部一旦完整到达就检查文件名。
-//返回 NO_REQUEST 表示「可以继续」（合格，或头部尚未到齐）
+//请求体边收边判：part 头部一旦完整到达就检查文件名；返回 NO_REQUEST 表示「可以继续」（合格，或头部尚未到齐）
 http_conn::HTTP_CODE http_conn::check_upload_name_early()
 {
     const size_t available = static_cast<size_t>(m_read_idx - m_body_start);
@@ -960,9 +916,7 @@ http_conn::HTTP_CODE http_conn::process_read()
 
     while (true)
     {
-        //请求体由 Content-Length 定长界定，不按行切分，因此内容阶段跳过 parse_line：
-        //对请求体调用它会在找不到行结束符时把 m_checked_idx 推到读索引处，
-        //使解析游标随每次读取向后漂移
+        //请求体由 Content-Length 定长界定、不按行切分，因此内容阶段跳过 parse_line：对请求体调用它会在找不到行结束符时把 m_checked_idx 推到读索引处，使解析游标随每次读取向后漂移
         if (m_check_state != CHECK_STATE_CONTENT)
         {
             line_status = parse_line();
@@ -981,9 +935,7 @@ http_conn::HTTP_CODE http_conn::process_read()
         case CHECK_STATE_REQUESTLINE:
         {
             ret = parse_request_line(text);
-            //请求行一旦出结果即为最终结果。只判 BAD_REQUEST 是不够的：
-            //方法未实现等其它取值会被当作「还没解析完」，
-            //从而把下一行（例如 Host 头）当成请求行继续解析
+            //请求行一旦出结果即为最终结果。只判 BAD_REQUEST 是不够的：方法未实现等其它取值会被当作「还没解析完」，从而把下一行（例如 Host 头）当成请求行继续解析
             if (ret != NO_REQUEST)
                 return ret;
             break;
@@ -1008,8 +960,7 @@ http_conn::HTTP_CODE http_conn::process_read()
             ret = parse_content(text);
             if (ret == GET_REQUEST)
                 return do_request();
-            //非 NO_REQUEST 即内容阶段的提前判定（上传文件名不合格），
-            //它是最终结果，不能像此前那样一律按「还没收完」丢弃
+            //非 NO_REQUEST 即内容阶段的提前判定（上传文件名不合格），它是最终结果，不能像此前那样一律按「还没收完」丢弃
             if (ret != NO_REQUEST)
                 return ret;
             //请求体尚未收完，等待后续数据
@@ -1031,6 +982,9 @@ bool http_conn::set_real_file(const char *relative_path)
 
 http_conn::HTTP_CODE http_conn::do_request()
 {
+    //进到这里说明请求已完整解析并消费掉，读缓冲里剩余的是下一个请求
+    m_request_parsed = true;
+
     // ========== 文件上传处理 ==========
     if (m_method == POST && m_is_file_upload && strncmp(m_url, "/upload", 7) == 0)
     {
@@ -1038,14 +992,12 @@ http_conn::HTTP_CODE http_conn::do_request()
         if (ret != GET_REQUEST)
             return BAD_REQUEST;
 
-        //文件名准入。与请求体接收途中的提前判定共用同一函数，两侧结论一致；
-        //这里仍要再判一次——提前判定只在 part 头部到达时才触发得到
+        //文件名准入。与请求体接收途中的提前判定共用同一函数以保证两侧结论一致；这里仍要再判一次——提前判定只在 part 头部到达时才触发得到
         const HTTP_CODE name_verdict = check_upload_name(m_file_name);
         if (name_verdict != GET_REQUEST)
             return name_verdict;
 
-        //体积上限在落盘之前校验。它无法提前判定：Content-Length 是请求体的长度，
-        //其中还包含边界与 part 头部，请求体未超限并不说明文件未超限
+        //体积上限在落盘之前校验。它无法提前判定：Content-Length 是请求体的长度，其中还含边界与 part 头部，请求体未超限并不说明文件未超限
         if (static_cast<long>(m_file_content.size()) > MAX_UPLOAD_SIZE)
             return REQUEST_TOO_LARGE;
 
@@ -1054,12 +1006,9 @@ http_conn::HTTP_CODE http_conn::do_request()
 
         strcpy(m_url, "/Upload-Success.html");
     }
-    // =================================
 
     // ========== 已上传文件的访问 ==========
-    //"GET /upload" 给出列表页，"GET /upload/<名称>" 返回对应文件，
-    //使上传后的内容可以通过 HTTP 取回（此前文件写入 ./upload/，
-    //而静态资源根目录是 ./root/，上传后无从访问）
+    //"GET /upload" 给出列表页，"GET /upload/<名称>" 返回对应文件，使上传后的内容能经 HTTP 取回（此前文件写入 ./upload/，而静态资源根目录是 ./root/，上传后无从访问）
     if (m_method != POST && strncmp(m_url, "/upload", 7) == 0)
     {
         if (m_url[7] == '\0')
@@ -1068,31 +1017,24 @@ http_conn::HTTP_CODE http_conn::do_request()
             return serve_uploaded_file(m_url + 8);
         return BAD_REQUEST; //形如 /uploadXYZ
     }
-    // =====================================
 
-    //printf("m_url:%s\n", m_url);
     const char *p = strrchr(m_url, '/');
 
-    //处理cgi
     if (cgi == 1 && (*(p + 1) == '2' || *(p + 1) == '3'))
     {
         //POST 但未携带请求体时 m_string 为空，此处的解析无从进行
         if (m_string == nullptr)
             return BAD_REQUEST;
 
-        //登录与注册都要查库，因此在这里从连接池借一个连接，离开本分支时由
-        //connectionRAII 归还。此前这里直接用成员 mysql 而从未取过连接，它恒为
-        //空指针，mysql_stmt_init 收到空指针会直接段错误
+        //登录与注册都要查库，因此在此从连接池借一个连接，离开本分支时由 connectionRAII 归还。此前这里直接用成员 mysql 却从未取过连接，它恒为空指针，mysql_stmt_init 会直接段错误
         if (m_connPool == nullptr)
             return INTERNAL_ERROR;
         connectionRAII mysqlcon(&mysql, m_connPool);
-        //连接池已建立却借不到连接，说明池是空的。如实返回 500 而不是把空指针
-        //交给后面的查询
+        //连接池已建立却借不到连接，说明池是空的。如实返回 500，而不是把空指针交给后面的查询
         if (mysql == nullptr)
             return INTERNAL_ERROR;
 
-        //此处不预拼路径：注册/登录的结果随后会把 m_url 改写为跳转页面，
-        //实际路径统一由下方的映射逻辑写入（见 set_real_file）
+        //此处不预拼路径：注册/登录的结果随后会把 m_url 改写为跳转页面，实际路径统一由下方的映射逻辑写入（见 set_real_file）
 
         //按 form-urlencoded 规则解析请求体，字段名与顺序都不再是解析前提
         const std::map<std::string, std::string> params = parse_form_body(m_string, m_content_length);
@@ -1106,8 +1048,6 @@ http_conn::HTTP_CODE http_conn::do_request()
 
         if (*(p + 1) == '3')
         {
-            //如果是注册，先检测数据库中是否有重名的
-            //没有重名的，进行增加数据
             switch (register_user(name, password, mysql))
             {
             case RegisterResult::kInserted:
@@ -1122,8 +1062,6 @@ http_conn::HTTP_CODE http_conn::do_request()
                 break;
             }
         }
-        //如果是登录，直接判断
-        //若浏览器端输入的用户名和密码在表中可以查找到，返回1，否则返回0
         else if (*(p + 1) == '2')
         {
             //库中保存的是加盐哈希，因此只能按哈希校验，不能直接比对原文
@@ -1135,9 +1073,7 @@ http_conn::HTTP_CODE http_conn::do_request()
         }
     }
 
-    //把请求路径映射为根目录下的实际文件路径。拼接在 m_real_file 的容量内一次完成，
-    //装不下即判为错误请求——此前的写法按剩余空间传长度，根目录过长时长度参数为负，
-    //转为无符号后写入越界地址
+    //把请求路径映射为根目录下的实际文件路径。拼接在 m_real_file 的容量内一次完成，装不下即判为错误请求——此前的写法按剩余空间传长度，根目录过长时长度参数为负，转为无符号后写入越界地址
     if (*(p + 1) == '0')
     {
         if (!set_real_file("/register.html"))
@@ -1254,10 +1190,7 @@ bool http_conn::write()
             }
         }
 
-        //尚未发完，推进还没写完的那一段。把「已发完」的判断提到前面，
-        //下面的指针运算就都建立在「确有剩余字节」之上——此前它在后面，
-        //HEAD 响应（iov_count 为 1、m_iv[1] 从未被设置）也要走一遍推进，
-        //算出的偏移为负且基址为空，构成指针运算越界
+        //尚未发完，推进还没写完的那一段。把「已发完」判断提到前面，下面的指针运算才都建立在「确有剩余字节」之上——此前它在后面，HEAD 响应（iov_count 为 1、m_iv[1] 从未被设置）也要走一遍推进，算出的偏移为负且基址为空，构成指针运算越界
         if (2 == m_iv_count && static_cast<size_t>(bytes_have_send) >= m_iv[0].iov_len)
         {
             //响应头已发完，改为续发文件映射区
@@ -1267,8 +1200,9 @@ bool http_conn::write()
         }
         else
         {
+            //按本次写出的字节推进：bytes_have_send 是累计量，再减一次会让长度越扣越小
             m_iv[0].iov_base = m_write_buf.data() + bytes_have_send;
-            m_iv[0].iov_len -= bytes_have_send;
+            m_iv[0].iov_len -= temp;
         }
     }
 }
@@ -1288,8 +1222,7 @@ bool http_conn::add_response(const char *format, ...)
     va_list arg_list;
     va_start(arg_list, format);
 
-    //空间不足时扩容后重试。vsnprintf 在截断时返回「本该写入的长度」，
-    //因此以它是否超出可用空间来判断是否需要重试
+    //空间不足时扩容后重试。vsnprintf 在截断时返回「本该写入的长度」，因此以它是否超出可用空间来判断是否需要重试
     while (true)
     {
         const size_t available = m_write_buf.size() - static_cast<size_t>(m_write_idx);
@@ -1370,8 +1303,7 @@ bool http_conn::add_content(const char *content)
 
 bool http_conn::process_write(HTTP_CODE ret)
 {
-    //错误响应的正文是纯文本，统一声明类型；此前这些响应没有任何 Content-Type，
-    //由客户端自行猜测
+    //错误响应的正文是纯文本，统一声明类型；此前这些响应没有任何 Content-Type，由客户端自行猜测
     static const char *kErrorContentType = "text/plain; charset=utf-8";
 
     switch (ret)
@@ -1393,8 +1325,7 @@ bool http_conn::process_write(HTTP_CODE ret)
     }
     case NO_RESOURCE:
     {
-        //此前该状态没有对应分支，控制流落入 default 后连接被直接关闭，
-        //客户端收不到任何响应
+        //此前该状态没有对应分支，控制流落入 default 后连接被直接关闭，客户端收不到任何响应
         if (!add_status_line(404, error_404_title) || !add_content_type(kErrorContentType) ||
             !add_headers(strlen(error_404_form)) || !add_content(error_404_form))
             return false;
@@ -1402,8 +1333,7 @@ bool http_conn::process_write(HTTP_CODE ret)
     }
     case REQUEST_TOO_LARGE:
     {
-        //请求体超限。余下的字节已无从处理，因此回应后关闭连接，
-        //而不沿用请求里的 keep-alive 意愿
+        //请求体超限。余下的字节已无从处理，因此回应后关闭连接，而不沿用请求里的 keep-alive 意愿
         m_linger = false;
         if (!add_status_line(413, error_413_title) || !add_content_type(kErrorContentType) ||
             !add_headers(strlen(error_413_form)) || !add_content(error_413_form))
@@ -1443,8 +1373,7 @@ bool http_conn::process_write(HTTP_CODE ret)
     }
     case EXPECTATION_FAILED:
     {
-        //客户端可能没等 100 Continue 就把请求体发了过来，那些字节无从处理，
-        //因此与 413 同样在回应后关闭连接
+        //客户端可能没等 100 Continue 就把请求体发了过来，那些字节无从处理，因此与 413 同样在回应后关闭连接
         m_linger = false;
         if (!add_status_line(417, error_417_title) || !add_content_type(kErrorContentType) ||
             !add_headers(strlen(error_417_form)) || !add_content(error_417_form))
@@ -1466,8 +1395,7 @@ bool http_conn::process_write(HTTP_CODE ret)
 
         if (m_is_upload_download)
         {
-            //上传内容来自用户，一律按附件下载：可携带脚本的类型（HTML、SVG 等）
-            //若就地渲染，会构成同源的存储型 XSS
+            //上传内容来自用户，一律按附件下载：可携带脚本的类型（HTML、SVG 等）若就地渲染，会构成同源的存储型 XSS
             const std::string path(m_real_file);
             const size_t slash = path.find_last_of('/');
             const std::string name = (slash == std::string::npos) ? path : path.substr(slash + 1);
@@ -1487,8 +1415,7 @@ bool http_conn::process_write(HTTP_CODE ret)
 
             if (m_method == HEAD)
             {
-                //HEAD 只发头部：Content-Length 仍是文件的真实长度，
-                //但正文不进入发送队列
+                //HEAD 只发头部：Content-Length 仍是文件的真实长度，但正文不进入发送队列
                 m_iv_count = 1;
                 bytes_to_send = m_write_idx;
             }
@@ -1541,7 +1468,6 @@ bool http_conn::process()
     return true;
 }
 
-//新增：文件上传功能代码
 void http_conn::init_file_upload_state()
 {
     m_is_file_upload = false;
@@ -1553,14 +1479,13 @@ void http_conn::init_file_upload_state()
     m_inline_content_type.clear();
 }
 
-// 新增：解析 multipart/form-data 请求体，从 m_string 中提取文件名和内容
+//解析 multipart/form-data 请求体，从 m_string 中提取文件名和内容
 http_conn::HTTP_CODE http_conn::parse_multipart_content()
 {
     if (m_content_length <= 0 || m_string == NULL)
         return BAD_REQUEST;
 
-    //在读缓冲上直接取视图，不整体拷贝一份请求体：请求体上限 8 MiB，
-    //多一次拷贝就意味着上传期间多 8 MiB 常驻，而这份副本只是用来查找
+    //在读缓冲上直接取视图，不整体拷贝一份请求体：请求体上限 8 MiB，多一次拷贝就意味着上传期间多 8 MiB 常驻，而这份副本只是用来查找
     const std::string_view body(m_string, static_cast<size_t>(m_content_length));
 
     const MultipartPart part = locate_first_part(body, m_boundary);
@@ -1585,19 +1510,17 @@ http_conn::HTTP_CODE http_conn::parse_multipart_content()
     return GET_REQUEST;
 }
 
-// 新增：将 m_file_content 写入上传目录
+//将 m_file_content 写入上传目录
 bool http_conn::save_uploaded_file()
 {
     if (m_file_name.empty())
         return false;
 
     const std::string upload_dir(kUploadDir);
-    // 确保目录存在
     if (access(upload_dir.c_str(), F_OK) != 0 && mkdir(upload_dir.c_str(), 0755) != 0)
         return false;
 
-    //文件名为空时 open 会失败，因此上面已先判空；此处只做单段限定，
-    //与读取路径的约束一致，保证写入与读取落在同一目录内
+    //文件名为空时 open 会失败，因此上面已先判空；此处只做单段限定，与读取路径的约束一致，保证写入与读取落在同一目录内
     if (m_file_name.find('/') != std::string::npos)
         return false;
 
@@ -1624,13 +1547,11 @@ http_conn::HTTP_CODE http_conn::serve_uploaded_file(const char *name)
     if (!S_ISREG(m_file_stat.st_mode))
         return FORBIDDEN_REQUEST;
 
-    //上传目录加文件名超出 m_real_file 容量时无法表示该路径，按错误请求处理，
-    //否则截断后的名称会打开并非请求目标的文件
+    //上传目录加文件名超出 m_real_file 容量时无法表示该路径，按错误请求处理，否则截断后的名称会打开并非请求目标的文件
     if (path.size() >= sizeof(m_real_file))
         return BAD_REQUEST;
     snprintf(m_real_file, sizeof(m_real_file), "%s", path.c_str());
 
-    //空文件不映射：长度为 0 的映射会失败，其响应由 process_write 直接给出空正文
     if (m_file_stat.st_size > 0)
     {
         const int fd = open(m_real_file, O_RDONLY);
@@ -1653,10 +1574,7 @@ http_conn::HTTP_CODE http_conn::serve_uploaded_file(const char *name)
 //生成已上传文件的列表页，链接指向各文件的下载地址
 http_conn::HTTP_CODE http_conn::build_upload_list()
 {
-    //目录不存在或不可读时按「没有文件」处理，而不是服务端错误：
-    //列表页的职责是展示已有内容，此时它与「目录存在但没有内容」是同一个结果。
-    //此前这里返回 500，而上传目录是运行期才按需创建的（见 save_uploaded_file），
-    //服务刚启动时它确实可能还不存在
+    //目录不存在或不可读时按「没有文件」处理，而不是服务端错误：列表页的职责是展示已有内容，此时与「目录存在但没有内容」是同一个结果。此前这里返回 500，而上传目录是运行期才按需创建的（见 save_uploaded_file），服务刚启动时它确实可能还不存在
     std::vector<std::pair<std::string, long>> files;
     if (DIR *dir = opendir(kUploadDir))
     {

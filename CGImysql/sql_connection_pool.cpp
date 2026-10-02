@@ -22,7 +22,6 @@ connection_pool *connection_pool::GetInstance()
     return &connPool;
 }
 
-//构造初始化
 void connection_pool::init(const string &url, const string &User, const string &PassWord, const string &DBName,
                            int Port, int MaxConn, int close_log)
 {
@@ -59,29 +58,32 @@ void connection_pool::init(const string &url, const string &User, const string &
     m_MaxConn = m_FreeConn;
 }
 
-//当有请求时，从数据库连接池中返回一个可用连接，更新使用和空闲连接数
 MYSQL *connection_pool::GetConnection()
 {
-    MYSQL *con = NULL;
-
-    if (0 == connList.size())
-        return NULL;
-
     reserve.wait();
 
+    MYSQL *con = NULL;
+
+    //对 connList 的读取必须与 ReleaseConnection 的写入同锁：此前在锁外读 size()，
+    //与另一线程的 push_back 构成未保护的并发访问
     lock.lock();
+    if (!connList.empty())
+    {
+        con = connList.front();
+        connList.pop_front();
 
-    con = connList.front();
-    connList.pop_front();
-
-    --m_FreeConn;
-    ++m_CurConn;
-
+        --m_FreeConn;
+        ++m_CurConn;
+    }
     lock.unlock();
+
+    //没取到就把信号量还回去，否则它的计数与实际空闲连接数不再对应
+    if (NULL == con)
+        reserve.post();
+
     return con;
 }
 
-//释放当前使用的连接
 bool connection_pool::ReleaseConnection(MYSQL *con)
 {
     if (NULL == con)
@@ -99,7 +101,6 @@ bool connection_pool::ReleaseConnection(MYSQL *con)
     return true;
 }
 
-//销毁数据库连接池
 void connection_pool::DestroyPool()
 {
     lock.lock();
@@ -119,7 +120,6 @@ void connection_pool::DestroyPool()
     lock.unlock();
 }
 
-//当前空闲的连接数
 int connection_pool::GetFreeConn() const
 {
     return this->m_FreeConn;

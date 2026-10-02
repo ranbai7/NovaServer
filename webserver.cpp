@@ -25,11 +25,9 @@ WebServer::WebServer()
 
 WebServer::~WebServer()
 {
-    //线程池必须最先停。它会 join 所有子线程，而子线程可能仍在处理连接——
-    //那些连接的协议对象持有 m_root（作为 doc_root），要等它们全部退出之后
-    //才能释放。析构函数体先于成员析构执行，若不在这里显式停掉，
-    //free(m_root) 就会跑在 m_thread_pool 析构之前，与还在读 m_root 的子线程
-    //构成数据竞争
+    //线程池必须最先停：它会 join 所有子线程，而子线程的协议对象仍持有 m_root（作为
+    //doc_root），须等它们全部退出才能释放。析构函数体先于成员析构执行，若不在此显式
+    //停掉，free(m_root) 会先于 m_thread_pool 析构运行，与仍在读 m_root 的子线程竞争
     m_thread_pool.reset();
 
     //随后释放监听与信号，最后释放事件循环：后两者的析构都要访问循环
@@ -39,11 +37,9 @@ WebServer::~WebServer()
 
     free(m_root);
 
-    //最后排空日志。异步写入下日志按缓冲块批量落盘，此处之前写下的内容还在内存里；
-    //放在所有组件析构之后，是为了把销毁过程本身产生的日志也一并落盘。
-    //
-    //不依赖 Log 单例的析构函数：它是函数内的 static，其析构排在退出阶段的静态析构
-    //序列里，顺序不确定，可能晚于其它同样会写日志的静态对象
+    //最后排空日志：异步写入下日志按缓冲块批量落盘，此前写下的内容还在内存里；放在所有
+    //组件析构之后，是为把销毁过程本身产生的日志也一并落盘。不依赖 Log 单例的析构函数：
+    //它是函数内 static，析构顺序不确定，可能晚于其它同样会写日志的静态对象
     Log::get_instance()->flush();
 }
 
@@ -71,8 +67,7 @@ void WebServer::init(const Config &config)
     m_db_password = config.db_password;
     m_db_name = config.db_name;
 
-    //触发模式的两侧组合。取值非法时终止启动：此前这里没有 else 分支，
-    //而两个成员又未初始化，写错配置会以不确定的方式注册描述符
+    //触发模式的两侧组合。取值非法即终止启动：此前没有 else 分支且两成员未初始化，写错会以不确定方式注册描述符
     switch (m_TRIGMode)
     {
     case 0: //LT + LT
@@ -96,26 +91,48 @@ void WebServer::init(const Config &config)
         exit(EXIT_FAILURE);
     }
 
-    //子 Reactor 线程数不得为负。0 是合法取值——不建子线程，全部连接归主循环，
-    //用于与多线程分发做对照；负数则只会被线程池静默当作 0，让「改了参数却没生效」
-    //看起来像是没有收益，因此在启动阶段直接拦下
+    //线程数不得为负：0 合法（全部连接归主循环，用于对照），负数会被线程池静默当作 0，让「改了参数却没生效」不易察觉，故启动阶段拦下
     if (m_thread_num < 0)
     {
         std::fprintf(stderr, "子 Reactor 线程数非法: %d（须不小于 0）\n", m_thread_num);
         exit(EXIT_FAILURE);
     }
 
-    //把站点根目录解析为规范化的绝对路径：既去掉 ./ 与重复的 /，
-    //也顺带确认该目录确实存在——否则每个请求都会走到 stat 失败为止，问题暴露得太晚。
-    //此处尚未初始化日志（日志初始化需要用到配置），因此只能写标准错误
+    //以下几项直接进入系统调用参数：端口超出 16 位会被 htons 截断绑到另一端，连接数为 0 则连接池为空、启动期查用户表拿到空句柄
+    if (m_port < 1 || m_port > 65535)
+    {
+        std::fprintf(stderr, "端口取值非法: %d（有效范围 1..65535）\n", m_port);
+        exit(EXIT_FAILURE);
+    }
+    if (m_db_port < 1 || m_db_port > 65535)
+    {
+        std::fprintf(stderr, "数据库端口取值非法: %d（有效范围 1..65535）\n", m_db_port);
+        exit(EXIT_FAILURE);
+    }
+    if (m_sql_num < 1)
+    {
+        std::fprintf(stderr, "数据库连接数非法: %d（须不小于 1）\n", m_sql_num);
+        exit(EXIT_FAILURE);
+    }
+    if (m_OPT_LINGER != 0 && m_OPT_LINGER != 1)
+    {
+        std::fprintf(stderr, "关闭连接方式非法: %d（0 = 不使用，1 = 使用）\n", m_OPT_LINGER);
+        exit(EXIT_FAILURE);
+    }
+    if (m_close_log != 0 && m_close_log != 1)
+    {
+        std::fprintf(stderr, "关闭日志开关非法: %d（0 = 打开，1 = 关闭）\n", m_close_log);
+        exit(EXIT_FAILURE);
+    }
+
+    //把站点根目录解析为规范化的绝对路径，兼确认目录存在——否则每个请求都走到 stat 失败太晚；此时日志尚未初始化，只能写标准错误
     char resolved[PATH_MAX];
     if (realpath(m_root_dir.c_str(), resolved) == nullptr)
     {
         std::fprintf(stderr, "站点根目录不可用: %s (%s)\n", m_root_dir.c_str(), strerror(errno));
         exit(EXIT_FAILURE);
     }
-    //根目录要与请求路径拼进 http_conn 的 m_real_file，装不下时每个请求都无法映射。
-    //这类错误只取决于配置，放在启动阶段一次性拦下，比在每个请求里才发现更清楚
+    //根目录要与请求路径拼进 http_conn 的 m_real_file，装不下则每个请求都无法映射；只取决于配置，启动阶段一次性拦下更清楚
     const size_t root_len = strlen(resolved);
     if (root_len > static_cast<size_t>(http_conn::MAX_ROOT_DIR_LEN))
     {
@@ -159,9 +176,7 @@ void WebServer::log_write()
         exit(EXIT_FAILURE);
     }
 
-    //日志的这几项取值直接参与缓冲区下标计算，越界取值会让日志子系统在「看起来
-    //一切正常」的情况下出错（例如单行上限小于时间前缀的长度时会写越界）。
-    //与触发模式、线程数一样，在启动阶段一次性拦下，而不是留给 Log 内部去夹取
+    //这几项直接参与缓冲区下标计算，越界会让日志子系统在「看起来正常」时出错；与触发模式、线程数一样在启动阶段一次性拦下
     const auto check_range = [](const char *name, int value, int lo, int hi)
     {
         if (value < lo || value > hi)
@@ -211,12 +226,9 @@ void WebServer::sql_pool()
 
 void WebServer::run()
 {
-    //退出信号的屏蔽已在 main() 开头完成——它必须早于**任何**线程的创建，
-    //而日志的写盘线程在这里之前就建好了，因此那一步不能留在这里。
-    //此处只负责把信号接到事件循环上
+    //退出信号的屏蔽已在 main() 开头完成——它必须早于任何线程的创建，而日志写盘线程在此前就建好，故那步不能留在这里；此处只把信号接到事件循环
 
-    //SIGPIPE 仍按忽略处理：客户端提前断开时写操作会收到它，
-    //而写失败已经在返回值里体现了，不需要让进程收到信号
+    //SIGPIPE 按忽略处理：客户端提前断开时写操作会收到它，而写失败已在返回值里体现，无需让进程收到信号
     signal(SIGPIPE, SIG_IGN);
 
     m_signals.reset(new SignalWatcher(m_loop.get(), {SIGTERM, SIGINT}));
@@ -245,8 +257,7 @@ void WebServer::on_new_connection(int connfd, const sockaddr_in &peer)
         return;
     }
 
-    //连接归某个子循环所有：把建立过程投递到那个线程，此后它的读写、协议解析
-    //与超时定时器都在那里完成，跨线程只传递这一次连接对象
+    //连接归某个子循环所有：建立过程投递到那个线程，此后的读写、解析与超时定时器都在那里完成，只跨线程传递一次连接对象
     EventLoop *loop = m_thread_pool->next_loop();
     loop->run_in_loop(
         [this, loop, connfd, peer]
@@ -256,8 +267,7 @@ void WebServer::on_new_connection(int connfd, const sockaddr_in &peer)
             conn->set_close_callback([this](const std::shared_ptr<TcpConnection> &closed)
                                      { on_connection_closed(closed); });
 
-            //顺序固定：先登记再启动。start() 里注册的定时器持有连接的弱引用，
-            //要求它此前已经被 shared_ptr 持有
+            //顺序固定：先登记再启动——start() 注册的定时器持有连接弱引用，要求它此前已被 shared_ptr 持有
             loop->add_connection(conn);
             conn->start();
         });
@@ -267,8 +277,7 @@ void WebServer::on_new_connection(int connfd, const sockaddr_in &peer)
 
 void WebServer::on_connection_closed(const std::shared_ptr<TcpConnection> &conn)
 {
-    //延迟擦除：本函数由连接自己的回调触发，立刻从注册表移除会让最后一份
-    //引用在回调栈内析构连接对象
+    //延迟擦除：本函数由连接自己的回调触发，立刻从注册表移除会让最后一份引用在回调栈内析构连接对象
     conn->loop()->remove_connection(conn);
 
     LOG_INFO("connection closed, active: %ld", m_conn_count.fetch_sub(1) - 1);
